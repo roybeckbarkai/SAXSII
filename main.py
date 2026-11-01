@@ -17,7 +17,8 @@ from PyQt5.QtWidgets import QInputDialog, QLineEdit
 from silx.gui.widgets.BoxLayoutDockWidget import BoxLayoutDockWidget
 from silx.gui.qt import QMessageBox
 from docking_bars import MyCurveLegendsWidget
-from open_methods import open_directory, open_poni, open_mask, open_nxs
+from open_methods import open_directory, open_poni, open_mask, open_nxs, load_nxs
+from mask_methods import ensure_mask
 from plotting_methods import image_plot_settings, curve_plot_settings, plot_mul_curves, subtractcurves, \
     plot_restricted_radius_image, plot_center_beam_image, avg_selection_1d_func, avg_selection_2d_func, subtract_2d
 from saving_methods import save_csv
@@ -154,6 +155,9 @@ class MyPlotWindow(qt.QMainWindow):
         self.layout.addWidget(button)
         button = qt.QPushButton("Load Image Folder", self)
         button.clicked.connect(self.open_directory_wrap)
+        self.layout.addWidget(button)
+        button = qt.QPushButton("Load NXS File", self)
+        button.clicked.connect(self.load_nxs_wrap)
         self.layout.addWidget(button)
         tw = qt.QTreeWidget(self)
         tw.setSortingEnabled(True)
@@ -530,12 +534,13 @@ class MyPlotWindow(qt.QMainWindow):
     def clearmarkers(self, checked):
         self.marker_dict = {}
 
-    def getIntegrationParams(self):
+    def getIntegrationParams(self, image=None):
         bins = int(self.bins.text())
         minradius = convert_radius_to_q(self, self.min_radius)
-        maxradius = convert_radius_to_q(self, self.max_radius)
-        poni = self.poni_file
-        mask = fabio.open(self.mask_file)
+        # max radius is only set once an image is shown; until then don't cut the curve
+        maxradius = convert_radius_to_q(self, self.max_radius) if self.max_radius > 0 else np.inf
+        poni = getattr(self, 'poni_file', None)
+        mask = ensure_mask(self, image)  # creates a detector-gap mask if none is loaded
         dezing_thres = float(self.dezing_thres.text())
         q_choice = self.q_combo.currentText()
         unit_dict = self.unitdict
@@ -553,7 +558,9 @@ class MyPlotWindow(qt.QMainWindow):
 
     def addMask(self, image):
         plot = self.getPlotWidget()
-        mask = fabio.open(self.mask_file)
+        mask = ensure_mask(self, image)
+        if mask is None:
+            return
         # # image = image - mask.data
         # img = plot.getImage('image')
         # img.setData(mask.data * 1000, colormap='red')
@@ -684,6 +691,9 @@ class MyPlotWindow(qt.QMainWindow):
 
     def open_nxs_wrap(self, path):
         open_nxs(self, path)
+
+    def load_nxs_wrap(self):
+        load_nxs(self)
 
     def show_data(self, checked):
         if checked:
@@ -947,6 +957,9 @@ class MyPlotWindow(qt.QMainWindow):
         button = qt.QPushButton("Load Image Folder", self)
         button.clicked.connect(self.open_directory_wrap)
         self.layout.addWidget(button)
+        button = qt.QPushButton("Load NXS File", self)
+        button.clicked.connect(self.load_nxs_wrap)
+        self.layout.addWidget(button)
         tw = qt.QTreeWidget(self)
         self.layout.addWidget(tw, stretch=1)
         self.tw = tw
@@ -1064,6 +1077,8 @@ class MyPlotWindow(qt.QMainWindow):
         self.clearmarkers_action.triggered.connect(self.clearmarkers)
         combo_box.currentIndexChanged.connect(self.change_layout)
 
+        tools1d = qt.QLabel('Tools')
+        tools1d.setStyleSheet("border: 1px solid black;")
         self.layout3.addWidget(tools1d)
         remove_selected_button = qt.QPushButton('Remove Selected', self)
         clear_all_button = qt.QPushButton('Clear', self)
@@ -1106,6 +1121,9 @@ class MyPlotWindow(qt.QMainWindow):
         self.layout.addWidget(button)
         button = qt.QPushButton("Load Image Folder", self)
         button.clicked.connect(self.open_directory_wrap)
+        self.layout.addWidget(button)
+        button = qt.QPushButton("Load NXS File", self)
+        button.clicked.connect(self.load_nxs_wrap)
         self.layout.addWidget(button)
         tw = qt.QTreeWidget(self)
         self.layout.addWidget(tw, stretch=1)

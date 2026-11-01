@@ -97,8 +97,15 @@ def caking(self, ai, image, q_choice):
 
 # Prelimenary step for integration (of any kind).
 def send_to_integration(self, imagelist):
+    if getattr(self, 'ai', None) is None:
+        msg = QMessageBox()
+        msg.setWindowTitle("Error")
+        msg.setText("Please Load a PONI File (or use the Calibration Tool) before integrating")
+        x = msg.exec_()
+        return
+    tif_images = [image for image in imagelist if image.endswith('.tiff') or image.endswith('.tif')]
     bins, minradius, maxradius, poni, mask, q_choice, dezing_thres, nxs_file_dict, datadict, chi_datadict, loadedlist, \
-    plot = self.getIntegrationParams()
+    plot = self.getIntegrationParams(tif_images[0] if tif_images else None)
     tw = self.tw
     ai = self.ai
     loadeditemsTextList = [str(loadedlist.item(i).text()) for i in range(loadedlist.count())]

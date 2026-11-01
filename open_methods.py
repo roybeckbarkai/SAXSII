@@ -1,4 +1,4 @@
-from silx.gui.qt import QFileDialog, QTreeWidgetItem, QFont
+from silx.gui.qt import QFileDialog, QTreeWidgetItem, QFont, QApplication, QMessageBox, Qt
 from os.path import isfile, join
 from os import listdir
 import pyFAI
@@ -184,7 +184,7 @@ def open_poni(self, FP=None):
 def open_mask(self, FP=None):
     try:
         if FP is None:
-            filepath = QFileDialog.getOpenFileName(self, filter='*.msk')
+            filepath = QFileDialog.getOpenFileName(self, filter='Mask files (*.msk *.edf *.tif *.tiff)')
             filepath = filepath[0]
         else:
             filepath = FP
@@ -208,6 +208,49 @@ def open_mask(self, FP=None):
 
     except Exception:
         logging.error('tried to open an mask file and something went wrong...')
+
+
+def load_nxs(self, FP=None):
+    """Convert a NeXus file to one TIFF per frame + PONI + mask (next to the .nxs,
+    in a folder named after it) and load all three, so integration can start
+    right away. A previous conversion is reused when its outputs are present.
+    If the file lacks the geometry for a PONI, the images and mask are still
+    loaded and the user is asked to load / create a PONI."""
+    from NXS2TIF_conversion.nxs_to_tiff import convert_file, output_paths
+
+    if FP is None:
+        filepath = QFileDialog.getOpenFileName(self, 'Select NeXus File', filter='*.nxs')[0]
+    else:
+        filepath = FP
+    if not filepath:
+        return
+    nxs_path = Path(filepath)
+    paths = output_paths(nxs_path, nxs_path.parent)
+    try:
+        if not all(paths[k].exists() for k in ('mask', 'meta')):
+            self.frame.setText('Converting {} ...'.format(nxs_path.name))
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+
+            def progress(done, total):
+                self.progressbar.setValue(int(done / total * 100))
+                QApplication.processEvents()
+
+            try:
+                convert_file(nxs_path, nxs_path.parent, progress=progress)
+            finally:
+                QApplication.restoreOverrideCursor()
+    except Exception as e:
+        logging.error('tried to convert an nxs file and something went wrong... {}'.format(e))
+        QMessageBox.critical(self, 'NXS Error', 'Could not convert {}:\n{}'.format(nxs_path.name, e))
+        return
+    open_directory(self, str(paths['dir']))
+    open_mask(self, str(paths['mask']))
+    if paths['poni'].exists():
+        open_poni(self, str(paths['poni']))
+    else:
+        QMessageBox.warning(self, 'No Calibration',
+                            '{} does not contain enough geometry to build a PONI file.\n'
+                            'Load a PONI file or use the Calibration Tool.'.format(nxs_path.name))
 
 
 def open_nxs(self, path):
