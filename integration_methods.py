@@ -1,145 +1,151 @@
-import time
-import numpy
-import re
-import fabio
+"""GUI-free azimuthal integration helpers built on pyFAI.
+
+All q values handled by this module are in inverse Angstrom (q_A^-1). Conversion to
+the unit the user wants to look at happens only at the edges (plotting / saving).
+"""
+import locale
+from pathlib import Path
+
 import numpy as np
-import pandas as pd
 import pyFAI
-from silx.gui.qt import QMessageBox, QFont
-from utils import dotdict
-from saving_methods import save_dat
+
+# Unit keys used throughout the app -> (pyFAI unit, factor from A^-1, display label)
+UNITS = {
+    "q_A^-1": ("q_A^-1", 1.0, "q (Å⁻¹)"),
+    "q_nm^-1": ("q_nm^-1", 10.0, "q (nm⁻¹)"),
+}
+
+# Full pixel splitting, CSR sparse matrix, cython implementation.
+METHOD = ("full", "csr", "cython")
+# Sigma clipping must not use pixel splitting (pyFAI: results are wrong otherwise).
+SIGMA_CLIP_METHOD = ("no", "csr", "cython")
 
 
-# Converts any q to the corresponding 2d image distance from the beamcenter.
-def convert_radius_to_q(self, radius):
-    def func(x):
-        return (4 * numpy.pi * (numpy.sin((numpy.arctan2(x * self.pixel_size * 0.001, self.distance * 1000) / 2)))) / (
-                self.wavelength / 10 ** (-10))
-
-    return func(radius)  # #
+class UserError(Exception):
+    """An error caused by user input that should be shown to the user verbatim."""
 
 
-# Converts any 2d image distance from the beamcenter to the corresponding q.
-def convert_q_to_radius(self, q):
-    def func(q_):
-        return (self.distance * 1000) * numpy.tan(
-            2 * numpy.arcsin((q_ * (self.wavelength * (10 ** 10))) / (4 * np.pi))) / (self.pixel_size * 0.001)
-
-    return func(q)
-    # x = 0
-    # rad = self.min_radius
-    # delta = 0.1
-    # statement = 0
-    # while statement == 0:
-    #     q_temp = convert_radius_to_q(self, x)
-    #     if q_temp + delta > q > q_temp - delta:
-    #         rad = x
-    #         statement = 1
-    #     if x > self.max_radius:
-    #         statement = 1
-    #         rad = self.max_radius
-    #     x = x + delta
+def unit_factor(unit):
+    if unit not in UNITS:
+        raise UserError(f"Unknown radial unit: {unit}")
+    return UNITS[unit][1]
 
 
-# Azimuthal integration.
-def full_integration(self, ai, image, mask, poni, dezing_thres, bins, minradius, maxradius, q_choice, datadict,
-                     chi_datadict, nxs,
-                     nxs_file_dict):
-    if not nxs:
-        imagefolder = self.imagepath
-        imagepath = imagefolder + '/' + image
-        img = fabio.open(imagepath)
-        filename = image.split('.')[0]
-        img_array = img.data
-    if nxs:
-        imagefolder = self.imagepath
-        image_name = image.split('.')[0] + '.nxs'
-        image_data = nxs_file_dict[image_name][image]
-        img_array = image_data
-        filename = image
-    t0 = time.time()
-    res = ai.sigma_clip_ng(img_array,
-                           bins,
-                           mask=mask,
-                           unit=q_choice,
-                           error_model='poisson',
-                           thres=dezing_thres,
-                           method=("full", "csr", "cython"))
-    # chi, chi_I = ai.integrate_radial(img_array,
-    #                                  bins,
-    #                                  mask=mask,
-    #                                  unit='chi_rad',
-    #                                  radial_unit='2th_rad',
-    #                                  radial_range=(minradius, maxradius),
-    #                                  method=("full", "csr", "opencl"))
-    df = pd.DataFrame.from_dict({'radial': res.radial, 'intensity': res.intensity, 'sigma': res.sigma},
-                                orient='columns')
-    df = df[(df.radial > minradius) & (df.radial < maxradius)]
-    df = df.dropna(axis=0)
-    df.reset_index(inplace=True, drop=True)
-    datadict[filename] = df
-    save_dat(filename, self.imagepath, df, q_choice)
-    #
-    # df_chi = pd.DataFrame.from_dict({'Azimuthal': chi, 'intensity': chi_I},
-    #                                 orient='columns')
-    # df_chi = df_chi.dropna(axis=0)
-    # df_chi.reset_index(inplace=True, drop=True)
-    # chi_datadict[filename] = df_chi
-    # save_dat(filename+"_chi", self.imagepath, df_chi, 'rad')
-    print(time.time() - t0)
+def load_poni(path):
+    p = Path(path).expanduser()
+    if not p.is_file():
+        raise UserError(f"PONI file not found: {p}")
+    try:  # some locales use ',' as decimal separator which breaks the PONI parser
+        locale.setlocale(locale.LC_NUMERIC, "C")
+    except locale.Error:
+        pass
+    try:
+        return pyFAI.load(str(p))
+    except Exception as e:
+        raise UserError(f"Could not read PONI file {p.name}: {e}") from e
 
 
-# 2D plot of Chi VS q VS Intensity.
-def caking(self, ai, image, q_choice):
-    res2d = ai.integrate2d(image, 300, 360, unit=q_choice)
-    return res2d
+def calibration_info(ai):
+    """Geometry in the units shown to the user (Fit2D convention for the beam center)."""
+    f2d = ai.getFit2D()
+    return {
+        "distance_mm": float(f2d["directDist"]),
+        "center_x": float(f2d["centerX"]),
+        "center_y": float(f2d["centerY"]),
+        "tilt": float(f2d["tilt"]),
+        "tilt_plan_rotation": float(f2d["tiltPlanRotation"]),
+        "pixel_x_um": float(f2d["pixelX"]),
+        "pixel_y_um": float(f2d["pixelY"]),
+        "wavelength_A": float(ai.wavelength * 1e10) if ai.wavelength else None,
+        "detector": ai.detector.name,
+    }
 
 
-# Prelimenary step for integration (of any kind).
-def send_to_integration(self, imagelist):
-    bins, minradius, maxradius, poni, mask, q_choice, dezing_thres, nxs_file_dict, datadict, chi_datadict, loadedlist, \
-    plot = self.getIntegrationParams()
-    tw = self.tw
-    ai = self.ai
-    loadeditemsTextList = [str(loadedlist.item(i).text()) for i in range(loadedlist.count())]
-    if len(imagelist) == 0:
-        msg = QMessageBox()
-        msg.setWindowTitle("Error")
-        msg.setText("Please Select an Image to Integrate")
-        x = msg.exec_()
-    else:
-        length = len(imagelist)
-        i = 1
-        for image in imagelist:
-            pvalue = int((i / length) * 100)
-            self.progressbar.setValue(pvalue)
-            self.progressbar.setFont(QFont('Segoe UI', 9))
-            # if image not in loadeditemsTextList:
-            if image.endswith('.tiff') or image.endswith('.tif'):
-                full_integration(self, ai=ai, image=image, poni=poni, mask=mask.data, bins=bins, minradius=minradius,
-                                 maxradius=maxradius, q_choice=q_choice, dezing_thres=dezing_thres, datadict=datadict,
-                                 chi_datadict=chi_datadict,
-                                 nxs=False,
-                                 nxs_file_dict=nxs_file_dict)
-                filename = image.split('.')[0]
-                res = datadict[filename]
-                plot.addCurve(x=res.radial, y=res.intensity, legend='{}'.format(filename),
-                              linewidth=2)
-                if image not in loadeditemsTextList:
-                    loadedlist.addItem(image)
-            regexp = re.compile(r'(?:nxs - image ).*$')
-            if regexp.search(image):
-                full_integration(self, ai=ai, image=image, poni=poni, mask=mask.data, bins=bins, minradius=minradius,
-                                 maxradius=maxradius, q_choice=q_choice, dezing_thres=dezing_thres, datadict=datadict,
-                                 chi_datadict=chi_datadict, nxs=True,
-                                 nxs_file_dict=nxs_file_dict)
-                res = datadict[image]
-                plot.addCurve(x=res.radial, y=res.intensity, legend='{}'.format(image),
-                              linewidth=2)
-                if image not in loadeditemsTextList:
-                    loadedlist.addItem(image)
-            if image.endswith('.nxs'):
-                None
-            i += 1
+def set_calibration(ai, distance_mm=None, center_x=None, center_y=None, wavelength_A=None):
+    """Update the geometry in place, keeping tilt and pixel size from the PONI file."""
+    f2d = ai.getFit2D()
+    ai.setFit2D(
+        distance_mm if distance_mm is not None else f2d["directDist"],
+        center_x if center_x is not None else f2d["centerX"],
+        center_y if center_y is not None else f2d["centerY"],
+        tilt=f2d["tilt"],
+        tiltPlanRotation=f2d["tiltPlanRotation"],
+        pixelX=f2d["pixelX"],
+        pixelY=f2d["pixelY"],
+    )
+    if wavelength_A is not None:
+        ai.wavelength = wavelength_A * 1e-10
 
 
+def build_mask(ai, image, user_mask=None):
+    """Boolean mask (True = ignore) combining the user mask, the detector mask and
+    pixels that cannot be real counts (negative gap values, integer saturation, NaN)."""
+    mask = ~np.isfinite(image)
+    mask |= image < 0
+    if np.issubdtype(image.dtype, np.integer):
+        mask |= image >= np.iinfo(image.dtype).max
+    det_mask = ai.detector.mask if ai is not None else None
+    if det_mask is not None and det_mask.shape == image.shape:
+        mask |= det_mask.astype(bool)
+    if user_mask is not None:
+        if user_mask.shape != image.shape:
+            raise UserError(f"Mask shape {user_mask.shape} does not match image shape {image.shape}")
+        mask |= user_mask.astype(bool)
+    return mask
+
+
+def q_range_arg(q_range):
+    """(q_min, q_max) in A^-1 with None meaning open -> pyFAI radial_range or None."""
+    if q_range is None:
+        return None
+    lo, hi = q_range
+    if lo is None and hi is None:
+        return None
+    lo = 0.0 if lo is None else float(lo)
+    hi = 1e3 if hi is None else float(hi)
+    if hi <= lo:
+        raise UserError("q max must be larger than q min")
+    return (lo, hi)
+
+
+def integrate_1d(ai, image, mask, bins, q_range=None, sigma_thres=1000.0):
+    """Sigma-clipped azimuthal average. Returns dict with radial (A^-1), intensity, sigma."""
+    res = ai.sigma_clip_ng(
+        image.astype(np.float32),
+        bins,
+        mask=mask,
+        unit="q_A^-1",
+        radial_range=q_range_arg(q_range),
+        error_model="poisson",
+        thres=sigma_thres,
+        method=SIGMA_CLIP_METHOD,
+    )
+    radial = np.asarray(res.radial, dtype=float)
+    intensity = np.asarray(res.intensity, dtype=float)
+    sigma = np.asarray(res.sigma, dtype=float) if res.sigma is not None else np.zeros_like(intensity)
+    keep = np.isfinite(intensity) & np.isfinite(radial)
+    count = getattr(res, "count", None)
+    if count is not None:
+        keep &= np.asarray(count) > 0  # empty bins carry no information
+    if not keep.any():
+        raise UserError("Integration produced no valid points - check the mask, PONI and q range.")
+    return {"radial": radial[keep], "intensity": intensity[keep], "sigma": np.nan_to_num(sigma[keep])}
+
+
+def cake(ai, image, mask, npt_rad=500, npt_azim=360, q_range=None):
+    """2D regrouping I(q, chi). Empty bins are returned as NaN."""
+    res = ai.integrate2d(image.astype(np.float32), npt_rad, npt_azim, mask=mask, unit="q_A^-1",
+                         radial_range=q_range_arg(q_range), method=METHOD, dummy=np.nan)
+    intensity = np.array(res.intensity, dtype=float)
+    count = getattr(res, "count", None)
+    if count is not None and np.shape(count) == intensity.shape:
+        intensity[np.asarray(count) <= 0] = np.nan
+    return {"intensity": intensity, "radial": np.asarray(res.radial, float), "chi": np.asarray(res.azimuthal, float)}
+
+
+def q_to_radius_px(ai, q):
+    """Approximate distance (px) from the beam center of the ring at q (A^-1), ignoring tilt.
+    Used only to draw rings on the image."""
+    info = calibration_info(ai)
+    two_theta = 2 * np.arcsin(np.clip(q * info["wavelength_A"] / (4 * np.pi), -1, 1))
+    return info["distance_mm"] * np.tan(two_theta) / (info["pixel_x_um"] * 1e-3)

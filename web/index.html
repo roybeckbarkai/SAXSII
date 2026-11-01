@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAXSII</title>
+<link rel="icon" href="/files/icon.png">
+<link rel="stylesheet" href="/web/style.css">
+<script src="/vendor/plotly.min.js"></script>
+</head>
+<body>
+<header>
+  <img src="/files/icon.png" alt="" class="logo">
+  <h1>SAXSII</h1>
+  <span id="folder-label" class="muted">No folder</span>
+  <span class="spacer"></span>
+  <span id="status" class="status"></span>
+</header>
+
+<main>
+  <!-- ============================================================ left: data & integration -->
+  <aside class="panel left">
+    <section>
+      <h2>Images</h2>
+      <div class="row">
+        <input id="folder-input" placeholder="Image folder path" spellcheck="false">
+        <button data-browse="folder" title="Browse">…</button>
+        <button id="folder-open" class="primary">Open</button>
+      </div>
+      <input id="file-filter" placeholder="Filter files" spellcheck="false">
+      <ul id="file-list" class="list" tabindex="0"></ul>
+      <div class="row small">
+        <label><input type="checkbox" id="track"> Track folder</label>
+        <label><input type="checkbox" id="track-show" disabled> Show newest</label>
+      </div>
+      <div class="row">
+        <button id="img-average">Average selected</button>
+        <button id="img-subtract">Subtract selected</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Calibration</h2>
+      <label class="field">PONI
+        <span class="row"><input id="poni-input" placeholder="path/to/file.poni" spellcheck="false">
+          <button data-browse="poni" title="Browse">…</button><button id="poni-load">Load</button></span>
+      </label>
+      <label class="field">Mask
+        <span class="row"><input id="mask-input" placeholder="path/to/mask.msk (optional)" spellcheck="false">
+          <button data-browse="mask" title="Browse">…</button><button id="mask-load">Load</button></span>
+      </label>
+      <button id="calib-tool">Open pyFAI calibration tool</button>
+    </section>
+
+    <section>
+      <h2>Integration</h2>
+      <div class="grid2">
+        <label class="field">Bins<input id="bins" type="number" min="2" step="1"></label>
+        <label class="field">Radial unit<select id="unit"></select></label>
+        <label class="field">q min<input id="qmin" type="number" step="any" placeholder="none"></label>
+        <label class="field">q max<input id="qmax" type="number" step="any" placeholder="none"></label>
+      </div>
+      <div class="row">
+        <button data-pick="qmin" title="Click on the image">Pick q min</button>
+        <button data-pick="qmax" title="Click on the image">Pick q max</button>
+        <button id="qrange-clear">Clear</button>
+      </div>
+      <label class="field">Sigma-clip threshold (dezinger)<input id="sigma" type="number" step="any"></label>
+      <div class="row">
+        <button id="integrate-sel" class="primary">Integrate selected</button>
+        <button id="integrate-all">Integrate all</button>
+      </div>
+      <progress id="progress" value="0" max="1" hidden></progress>
+    </section>
+  </aside>
+
+  <!-- ============================================================ center: plot -->
+  <section class="center">
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="image" class="active">Image</button>
+      <button role="tab" data-tab="curves">1D curves</button>
+      <button role="tab" data-tab="cake">Cake (q–χ)</button>
+      <button role="tab" data-tab="anis">Anisotropy</button>
+    </nav>
+
+    <div class="toolbar" id="toolbar-2d">
+      <label>Colormap <select id="cmap"></select></label>
+      <label>Scale <select id="scale"><option value="log">log</option><option value="linear">linear</option></select></label>
+      <label title="Lower / upper percentile used for the color limits">Limits %
+        <input id="lo-pct" type="number" step="any" value="1" class="tiny"> –
+        <input id="hi-pct" type="number" step="any" value="99.9" class="tiny"></label>
+      <label class="for-image"><input type="checkbox" id="show-mask" checked> Mask</label>
+      <label class="for-image"><input type="checkbox" id="show-rings" checked> Rings</label>
+      <button class="for-image" data-pick="center">Set center</button>
+      <button class="for-image for-curves" data-pick="marker">Add marker</button>
+      <span class="for-anis anis-opts">
+        <label>Map <select id="anis-mode">
+          <option value="divide">I / I<sub>iso</sub> − 1</option>
+          <option value="subtract">I − I<sub>iso</sub></option></select></label>
+        <label title="Divide both the image and its reference by the pixel solid angle"><input type="checkbox" id="anis-sa"> Solid angle</label>
+        <label title="Polarization factor (e.g. 0.99 for synchrotron, empty = no correction)">Polarization
+          <input id="anis-pol" type="number" step="any" min="-1" max="1" class="tiny" placeholder="off"></label>
+      </span>
+    </div>
+    <div class="toolbar hidden" id="toolbar-1d">
+      <label><input type="checkbox" id="logx"> log x</label>
+      <label><input type="checkbox" id="logy" checked> log y</label>
+      <label><input type="checkbox" id="errbars"> Error bars</label>
+      <button data-pick="marker">Add marker</button>
+    </div>
+
+    <div id="plot-wrap">
+      <div id="plot"></div>
+      <div id="placeholder" class="placeholder">
+        <img src="/files/saxsii.jpeg" alt="">
+        <p>Open an image folder and a PONI file to start.</p>
+      </div>
+    </div>
+    <div id="chi-wrap" class="hidden">
+      <div class="chi-head">
+        <strong>Azimuthal profile I(χ)</strong>
+        <span class="muted">over q min – q max</span>
+        <span id="chi-metrics"></span>
+      </div>
+      <div id="chi-plot"></div>
+    </div>
+    <footer id="readout" class="readout">&nbsp;</footer>
+  </section>
+
+  <!-- ============================================================ right: analysis -->
+  <aside class="panel right">
+    <section>
+      <h2>Integrated curves</h2>
+      <ul id="curve-list" class="list"></ul>
+      <div class="row">
+        <button id="curve-subtract">Subtract…</button>
+        <button id="curve-average">Average…</button>
+        <button id="curve-export">Export CSV</button>
+      </div>
+      <div class="row">
+        <button id="curve-load">Load .dat…</button>
+        <button id="curve-remove">Remove</button>
+        <button id="curve-clear">Clear</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Markers</h2>
+      <ul id="marker-list" class="list short"></ul>
+      <div class="row">
+        <input id="marker-name" placeholder="name">
+        <input id="marker-q" type="number" step="any" placeholder="q" class="small-input">
+        <button id="marker-add">Add</button>
+      </div>
+      <button id="marker-clear">Clear markers</button>
+    </section>
+
+    <section>
+      <h2>Geometry</h2>
+      <div class="grid2">
+        <label class="field">Distance (mm)<input id="cal-dist" type="number" step="any"></label>
+        <label class="field">Wavelength (Å)<input id="cal-wl" type="number" step="any"></label>
+        <label class="field">Center X (px)<input id="cal-cx" type="number" step="any"></label>
+        <label class="field">Center Y (px)<input id="cal-cy" type="number" step="any"></label>
+      </div>
+      <p id="cal-extra" class="muted small"></p>
+      <div class="row">
+        <button id="cal-apply" class="primary">Apply</button>
+        <button id="cal-reset">Reload PONI</button>
+      </div>
+    </section>
+  </aside>
+</main>
+
+<!-- generic modal (file browser, dialogs) -->
+<dialog id="modal">
+  <form method="dialog" id="modal-form">
+    <h3 id="modal-title"></h3>
+    <div id="modal-body"></div>
+    <div class="row end">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button value="ok" id="modal-ok" class="primary">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+<script src="/web/app.js"></script>
+</body>
+</html>

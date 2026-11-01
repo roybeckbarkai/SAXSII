@@ -1,162 +1,132 @@
+"""Anisotropy analysis.
+
+The isotropic reference I_iso(x, y) is the azimuthal average of the image evaluated at
+the q of every pixel. Comparing the image with it highlights anisotropic scattering:
+
+    subtract:  I - I_iso            (signed, same units as the image)
+    divide:    I / I_iso - 1        (signed, relative deviation)
+
+The reference and the image must be in the same "frame", so the azimuthal average is
+taken over the very same (optionally corrected) pixel values it is compared with. The
+q of every pixel comes from pyFAI, so detector tilt and the PONI beam center are honoured.
+"""
 import numpy as np
-from scipy.interpolate import interp1d
-from integration_methods import full_integration, convert_radius_to_q
-import os
-from scipy.ndimage import gaussian_filter1d
-from scipy.ndimage import median_filter
+
+from integration_methods import METHOD, UserError, q_range_arg
 
 
+def corrected_image(ai, image, solid_angle=False, polarization=None):
+    """Image divided by the requested geometric corrections (as float, NaNs untouched)."""
+    img = image.astype(float)
+    if solid_angle:
+        sa = ai.solidAngleArray(image.shape, absolute=False)
+        img = img / sa
+    if polarization is not None:
+        pol = ai.polarization(image.shape, factor=float(polarization))
+        img = img / pol
+    return img
 
-def integrate_with_anisotropy(main_window, image_filename):
+
+def pixel_q_map(ai, shape):
+    return ai.array_from_unit(shape, "center", "q_A^-1")
+
+
+def pixel_chi_map(ai, shape):
+    return ai.array_from_unit(shape, "center", "chi_deg")
+
+
+def isotropic_reference(ai, image, mask, bins=1000):
+    """Return (q, I(q), I_iso 2D) for an already corrected float image.
+
+    Pixels outside the q range covered by valid bins and masked pixels are NaN."""
+    res = ai.integrate1d(image, bins, mask=mask, unit="q_A^-1", correctSolidAngle=False,
+                         polarization_factor=None, method=METHOD)
+    q = np.asarray(res.radial, float)
+    I = np.asarray(res.intensity, float)
+    valid = np.isfinite(I)
+    count = getattr(res, "count", None)
+    if count is not None:
+        valid &= np.asarray(count) > 0
+    if valid.sum() < 2:
+        raise UserError("Not enough valid pixels to build the isotropic reference - check mask and PONI.")
+    q, I = q[valid], I[valid]
+    qmap = pixel_q_map(ai, image.shape)
+    iso = np.interp(qmap, q, I, left=np.nan, right=np.nan)
+    iso[mask] = np.nan
+    return q, I, iso
+
+
+def anisotropy_map(ai, image, mask, mode="divide", bins=1000, q_range=None,
+                   solid_angle=False, polarization=None):
+    """Signed anisotropy map. mode: 'subtract' -> I - I_iso, 'divide' -> I / I_iso - 1."""
+    if mode not in ("subtract", "divide"):
+        raise UserError(f"Unknown anisotropy mode: {mode}")
+    img = corrected_image(ai, image, solid_angle, polarization)
+    img[mask] = np.nan
+    q, I, iso = isotropic_reference(ai, img, mask, bins)
+
+    if mode == "subtract":
+        out = img - iso
+    else:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out = img / iso - 1.0
+        # A ratio against a (near) empty reference is meaningless, not "infinitely anisotropic".
+        out[~(iso > 0)] = np.nan
+
+    rng = q_range_arg(q_range)
+    if rng is not None:
+        qmap = pixel_q_map(ai, image.shape)
+        out[(qmap < rng[0]) | (qmap > rng[1])] = np.nan
+    out[~np.isfinite(out)] = np.nan
+    if not np.isfinite(out).any():
+        raise UserError("The anisotropy map is empty - check the q range, mask and PONI.")
+    return out, {"q": q, "intensity": I}
+
+
+def chi_profile(ai, image, mask, q_range, nbins=180, solid_angle=False, polarization=None):
+    """Mean intensity vs azimuthal angle chi (deg) for pixels with q in q_range (A^-1).
+
+    Also returns anisotropy descriptors from fitting I(chi) = I0 [1 + A cos 2(chi - phi)]:
+      * amplitude: A (0 = isotropic); robust to noise and to missing azimuthal sectors.
+      * orientation_deg: phi, the chi of maximum intensity (pyFAI chi convention).
     """
-    Performs 1D integration on the selected image (filename, not array)
-    using the same pipeline as main.py. Reconstructs a smoothed isotropic
-    2D diffraction pattern. If selected min/max radius produce no valid
-    pixels, falls back once to full detector and warns the user.
-    """
+    rng = q_range_arg(q_range)
+    if rng is None:
+        raise UserError("Set a q range (q min and q max) for the chi profile.")
+    img = corrected_image(ai, image, solid_angle, polarization)
+    img[mask] = np.nan
+    _, _, iso = isotropic_reference(ai, img, mask)
+    qmap = pixel_q_map(ai, image.shape)
+    chi = pixel_chi_map(ai, image.shape)
+    sel = (~mask) & np.isfinite(img) & (iso > 0) & (qmap >= rng[0]) & (qmap <= rng[1])
+    if sel.sum() == 0:
+        raise UserError("No unmasked pixels in that q range.")
 
-    (
-        bins,
-        min_q,
-        max_q,
-        poni,
-        mask,
-        q_choice,
-        dezing_thres,
-        nxs_file_dict,
-        datadict,
-        chi_datadict,
-        loadedlist,
-        plot
-    ) = main_window.getIntegrationParams()
+    # Average I / I_iso(q) per chi bin, then rescale by the mean intensity of the band.
+    # Dividing first removes the q dependence, so detector gaps or a ring partially off the
+    # detector (each chi bin seeing a different q mix) do not show up as fake anisotropy.
+    edges = np.linspace(-180.0, 180.0, nbins + 1)
+    idx = np.clip(np.digitize(chi[sel], edges) - 1, 0, nbins - 1)
+    sums = np.bincount(idx, weights=img[sel] / iso[sel], minlength=nbins)
+    counts = np.bincount(idx, minlength=nbins)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        prof = sums / counts * img[sel].mean()
+    prof[counts == 0] = np.nan
+    centers = 0.5 * (edges[:-1] + edges[1:])
 
-    h, w = main_window.raw_image.shape
-    cx, cy = main_window.beamcenterx, main_window.beamcentery
-    max_possible_radius = np.sqrt(cx**2 + cy**2 + (w - cx)**2 + (h - cy)**2)
-
-    minradius = 0
-    maxradius = max_possible_radius
-    ai = main_window.ai
-    poni_path = main_window.poni_file
-
-    if not os.path.exists(poni_path):
-        poni_path = os.path.basename(poni_path)
-
-    def run_integration(min_r, max_r):
-        """Internal helper to avoid recursion."""
-        full_integration(
-            main_window,
-            ai,
-            image_filename,
-            mask.data if hasattr(mask, "data") else mask,
-            poni_path,
-            dezing_thres,
-            bins,
-            min_r,
-            max_r,
-            q_choice,
-            datadict,
-            chi_datadict,
-            False,
-            nxs_file_dict
-        )
-        filename_key = image_filename.split('.')[0]
-        if filename_key not in datadict:
-            return None
-        df = datadict[filename_key]
-        if df.empty or df["intensity"].size == 0:
-            return None
-        return df
-
-    # Try with user-selected range
-    df = run_integration(minradius, maxradius)
-
-    # Fallback once if empty
-    if df is None:
-        print(f"⚠️ No data found for radii ({minradius}, {maxradius}). Using full detector instead.")
-        df = run_integration(0, 0)
-        if df is None:
-            raise RuntimeError(
-                f"Integration failed even for full detector. "
-                f"Check mask, image, or PONI alignment."
-            )
-
-    q = df["radial"].to_numpy()
-    I = df["intensity"].to_numpy()
-
-    # Smooth the 1D curve to reduce ring artifacts
-    I_smooth = gaussian_filter1d(I, sigma=2)
-    one_D_curve = {"q": q, "I": I_smooth}
-
-    # Reconstruct isotropic 2D image
-    image = main_window.raw_image
-    h, w = image.shape
-    cx, cy = main_window.beamcenterx, main_window.beamcentery
-    y, x = np.indices(image.shape)
-    r = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
-    q_pixel = convert_radius_to_q(main_window, r)
-
-    interp_func = interp1d(q, I_smooth, bounds_error=False, fill_value=0)
-    iso_2d = interp_func(q_pixel)
-
-    if hasattr(mask, "data"):
-        iso_2d[mask.data > 0] = np.nan
-
-    return one_D_curve, iso_2d
-
-
-def subtract_iso(main_window, original_image, iso_2d, mask=None):
-    if original_image.shape != iso_2d.shape:
-        raise ValueError("Shape mismatch between original image and iso_2d")
-
-    # --- Compute raw subtraction ---
-    sub_2d = original_image.astype(float) - iso_2d.astype(float)
-
-    # --- Apply mask ---
-    if mask is not None:
-        sub_2d[mask] = np.nan
-
-    # --- Apply q-range limits (respect min/max radius if set) ---
-    if main_window.min_radius > 0 and main_window.max_radius > 0:
-        cx, cy = main_window.beamcenterx, main_window.beamcentery
-        y, x = np.indices(original_image.shape)
-        r = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
-        outside = (r < main_window.min_radius) | (r > main_window.max_radius)
-        sub_2d[outside] = np.nan
-
-    # --- Mask negative or zero values for log scaling ---
-    sub_2d[sub_2d <= 0] = np.nan
-
-    return sub_2d
-
-
-
-
-def divide_iso(main_window, original_image, iso_2d, mask=None):
-    if original_image.shape != iso_2d.shape:
-        raise ValueError("Shape mismatch between original image and iso_2d")
-
-    # --- Avoid division by zero ---
-    iso_safe = iso_2d.astype(float)
-    iso_safe[iso_safe == 0] = np.nan
-
-    # --- Compute normalized deviation ---
-    ratio_map = (original_image.astype(float) / iso_safe) - 1.0
-
-    # --- Apply mask ---
-    if mask is not None:
-        ratio_map[mask] = np.nan
-
-    # --- Apply q-range limits ---
-    if main_window.min_radius > 0 and main_window.max_radius > 0:
-        cx, cy = main_window.beamcenterx, main_window.beamcentery
-        y, x = np.indices(original_image.shape)
-        r = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
-        outside = (r < main_window.min_radius) | (r > main_window.max_radius)
-        ratio_map[outside] = np.nan
-
-    # --- Remove non-finite and extreme values ---
-    ratio_map[np.isinf(ratio_map)] = np.nan
-    ratio_map[np.isnan(ratio_map)] = np.nan
-
-    return ratio_map
+    # Least-squares fit I(chi) = a0 + c cos 2chi + s sin 2chi over the bins that have data
+    # (a plain Fourier sum would turn missing bins - gaps, beamstop - into fake anisotropy).
+    ok = np.isfinite(prof)
+    if ok.sum() < 4:
+        raise UserError("Too few azimuthal bins have data in that q range.")
+    rad = np.deg2rad(centers[ok])
+    design = np.column_stack([np.ones_like(rad), np.cos(2 * rad), np.sin(2 * rad)])
+    (a0, c, s), *_ = np.linalg.lstsq(design, prof[ok], rcond=None)
+    metrics = {
+        "amplitude": float(np.hypot(c, s) / a0) if a0 > 0 else None,
+        "orientation_deg": float(np.rad2deg(np.arctan2(s, c)) / 2),
+        "max_over_min": float(np.nanmax(prof) / np.nanmin(prof)) if np.nanmin(prof) > 0 else None,
+        "coverage": float(ok.mean()),
+        "pixels": int(sel.sum()),
+    }
+    return {"chi": centers, "intensity": prof}, metrics
