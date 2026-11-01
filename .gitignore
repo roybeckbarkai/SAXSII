@@ -56,3 +56,8 @@ app*.log
 # SAXSII runtime state
 settings.json
 SAVE.txt
+
+# from origin/main
+Test_sample/
+NXS2TIF_conversion/__pycache__/
+.venv/

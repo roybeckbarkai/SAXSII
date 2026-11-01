@@ -52,6 +52,8 @@ def list_images(folder):
         ext = os.path.splitext(entry.name)[1].lower()
         mtime = entry.stat().st_mtime
         if ext in IMAGE_EXTS:
+            if os.path.splitext(entry.name)[0].lower().endswith("mask"):
+                continue  # masks (e.g. <stem>_mask.edf from the NXS converter) are not images
             items.append({"id": entry.name, "name": entry.name, "mtime": mtime})
         elif ext in HDF5_EXTS:
             try:

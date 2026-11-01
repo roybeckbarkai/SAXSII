@@ -238,6 +238,19 @@ $("#mask-load").onclick = () => run("Loading mask", async () => {
   toast($("#mask-input").value ? "Mask loaded" : "Mask cleared", "info");
   showView();
 });
+$("#nxs-load").onclick = async () => {
+  const path = await browse({ title: "Choose NeXus file", exts: ".nxs,.h5", path: S.st?.settings.folder || "" });
+  if (!path) return;
+  run("Converting NeXus file (may take a while)", async () => {
+    const r = await api("/api/nxs", { path });
+    applyState(r);
+    $("#folder-input").value = $("#folder-label").textContent = r.settings.folder;
+    S.sel.clear(); S.current = null;
+    setFiles(r.files);
+    if (r.warning) toast(r.warning); else toast("NeXus file converted and loaded", "info");
+    showView();
+  });
+};
 $("#calib-tool").onclick = () => run("Starting pyFAI-calib2", () => api("/api/calib_tool", {}));
 
 async function postSettings(patch) {

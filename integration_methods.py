@@ -79,11 +79,17 @@ def set_calibration(ai, distance_mm=None, center_x=None, center_y=None, waveleng
 
 def build_mask(ai, image, user_mask=None):
     """Boolean mask (True = ignore) combining the user mask, the detector mask and
-    pixels that cannot be real counts (negative gap values, integer saturation, NaN)."""
+    pixels that cannot be real counts (negative gap values, integer saturation, NaN,
+    and whole rows / columns of one constant value - module gaps already set to 0,
+    e.g. in TIFFs converted from NXS)."""
     mask = ~np.isfinite(image)
     mask |= image < 0
     if np.issubdtype(image.dtype, np.integer):
         mask |= image >= np.iinfo(image.dtype).max
+    else:
+        mask |= image >= 2 ** 32 - 1  # uint32 gap flag stored as float
+    mask[(image == image[:, :1]).all(axis=1), :] = True
+    mask[:, (image == image[:1, :]).all(axis=0)] = True
     det_mask = ai.detector.mask if ai is not None else None
     if det_mask is not None and det_mask.shape == image.shape:
         mask |= det_mask.astype(bool)

@@ -299,6 +299,33 @@ def post_mask():
         return jsonify(state.public())
 
 
+@app.post("/api/nxs")
+def load_nxs():
+    """Convert a NeXus file to one TIFF per frame + mask + PONI (next to the .nxs, in a
+    folder named after it; an earlier conversion is reused) and load all three."""
+    from NXS2TIF_conversion.nxs_to_tiff import convert_file, output_paths
+    path = Path((body().get("path") or "").strip())
+    if not path.is_file():
+        raise UserError(f"NeXus file not found: {path}")
+    with state.lock:
+        paths = output_paths(path, path.parent)
+        if not all(paths[k].exists() for k in ("mask", "meta")):
+            try:
+                convert_file(path, path.parent)
+            except Exception as e:
+                log.exception("NXS conversion failed")
+                raise UserError(f"Could not convert {path.name}: {e}") from e
+        state.settings["folder"] = str(paths["dir"])
+        state.set_mask(str(paths["mask"]))
+        warning = None
+        if paths["poni"].exists():
+            state.set_poni(str(paths["poni"]))
+        else:
+            warning = f"{path.name} does not contain enough geometry to build a PONI file. Load a PONI file or use the calibration tool."
+        state.save_settings()
+        return jsonify({**state.public(), "files": image_io.list_images(paths["dir"]), "warning": warning})
+
+
 @app.post("/api/calibration")
 def post_calibration():
     b = body()

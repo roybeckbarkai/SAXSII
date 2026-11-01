@@ -15,6 +15,8 @@ The server listens on `127.0.0.1` only. Folder, PONI, mask and integration setti
 
 1. **Images** – open a folder (`.tif/.tiff/.edf/.cbf`, HDF5/NeXus stacks are listed frame by frame).
    *Track folder* polls for new files; *Show newest* displays each new image as it arrives.
+   *Load NXS file…* converts a NeXus file into per-frame TIFFs + mask + PONI (folder next to the `.nxs`,
+   via `NXS2TIF_conversion/nxs_to_tiff.py`) and loads them.
 2. **Calibration** – load a `.poni` file (from `pyFAI-calib2`) and optionally a `.msk` mask.
    Negative pixels (detector gaps), integer-saturated pixels and the detector's own mask are always excluded.
    The geometry panel lets you adjust distance / wavelength / beam center (or click *Set center* on the image).
