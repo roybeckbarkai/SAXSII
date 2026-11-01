@@ -14,8 +14,7 @@ For every .nxs file in a directory (or a single file) this writes, into
                                                   position, f = inner index;
                                                   invalid / gap pixels set to 0)
     <stem>_f000.tif ...                          same, for a 1-D scan or single image
-    <stem>_avg.tif                               mean of all frames, float32
-    <stem>_mask.edf                              uint8, 1 = gap / masked pixel
+    <stem>_mask.edf                             uint8, 1 = gap / masked pixel
                                                  (EDF so it is not listed as an image)
     <stem>.poni                                  pyFAI calibration built from the
                                                  NeXus geometry (binning applied);
@@ -26,9 +25,7 @@ Usage
 -----
     python nxs_to_tiff.py  /path/to/dir_with_nxs   /path/to/output
     python nxs_to_tiff.py  one_file.nxs            /path/to/output
-    python nxs_to_tiff.py  dir  out  --no-frames        # only avg + mask
     python nxs_to_tiff.py  dir  out  --gap-value -1     # frames saved as int32
-    python nxs_to_tiff.py  dir  out  --pos-avg          # also one average per position
 
 Requires:  pip install h5py numpy tifffile fabio pyFAI
 """
@@ -281,14 +278,12 @@ def output_paths(nxs_path, out_root):
     stem = Path(nxs_path).stem
     out_dir = Path(out_root) / stem
     return {"dir": out_dir,
-            "average": out_dir / f"{stem}_avg.tif",
             "mask": out_dir / f"{stem}_mask.edf",
             "poni": out_dir / f"{stem}.poni",
             "meta": out_dir / f"{stem}_meta.json"}
 
 
-def convert_file(nxs_path, out_root, write_frames=True, gap_value=0,
-                 pos_avg=False, overwrite=False, progress=None):
+def convert_file(nxs_path, out_root, gap_value=0, overwrite=False, progress=None):
     """progress: optional callable(done, total) called after each scan position.
     Returns the meta dict; meta['poni_file'] is None if no PONI could be built
     (the reason is in meta['poni_error'])."""
@@ -327,7 +322,6 @@ def convert_file(nxs_path, out_root, write_frames=True, gap_value=0,
         if det is not None and "pixel_mask" in det and det["pixel_mask"].shape[-2:] == img_shape:
             pm = np.asarray(det["pixel_mask"][()]).reshape(-1, *img_shape)
             mask |= (pm != 0).any(axis=0)     # NeXus: non-zero = bad pixel
-        acc = np.zeros(img_shape, dtype=np.float64)
         frame_names = []
 
         # Iterate over the outer index only -> one hyperslab read per position,
@@ -340,39 +334,25 @@ def convert_file(nxs_path, out_root, write_frames=True, gap_value=0,
         for p in range(n_pos):
             block = ds[p] if len(scan_shape) > 1 else ds[()]
             block = np.asarray(block).reshape(-1, *img_shape)
-            pos_acc = np.zeros(img_shape, dtype=np.float64)
 
             for f, frame in enumerate(block):
                 gaps = _invalid_pixels(frame)
                 mask |= gaps
 
-                clean = frame.astype(np.float64)
-                clean[gaps] = 0.0
-                acc += clean
-                pos_acc += clean
+                out = frame.astype(frame_dtype)
+                out[gaps] = gap_value
+                if len(scan_shape) > 1:
+                    name = f"{stem}_p{p:02d}_f{f:02d}.tif"
+                else:
+                    name = f"{stem}_f{f:03d}.tif"
+                fp = out_dir / name
+                if overwrite or not fp.exists():
+                    tifffile.imwrite(fp, out, photometric="minisblack")
+                frame_names.append(name)
 
-                if write_frames:
-                    out = frame.astype(frame_dtype)
-                    out[gaps] = gap_value
-                    if len(scan_shape) > 1:
-                        name = f"{stem}_p{p:02d}_f{f:02d}.tif"
-                    else:
-                        name = f"{stem}_f{f:03d}.tif"
-                    fp = out_dir / name
-                    if overwrite or not fp.exists():
-                        tifffile.imwrite(fp, out, photometric="minisblack")
-                    frame_names.append(name)
-
-            if pos_avg and len(scan_shape) > 1:
-                pavg = (pos_acc / block.shape[0]).astype(np.float32)
-                tifffile.imwrite(out_dir / f"{stem}_p{p:02d}_avg.tif", pavg,
-                                 photometric="minisblack")
             if progress is not None:
                 progress(p + 1, n_pos)
 
-        avg = (acc / n_frames).astype(np.float32)
-        avg[mask] = 0.0
-        tifffile.imwrite(paths["average"], avg, photometric="minisblack")
         fabio.edfimage.EdfImage(data=mask.astype(np.uint8)).write(str(paths["mask"]))
         try:
             write_poni(meta, paths["poni"])
@@ -385,13 +365,12 @@ def convert_file(nxs_path, out_root, write_frames=True, gap_value=0,
             print(f"  !! {meta['poni_error']}")
 
         meta["frame_files"] = frame_names
-        meta["average_file"] = paths["average"].name
         meta["mask_file"] = paths["mask"].name
         meta["n_masked_pixels"] = int(mask.sum())
         with open(paths["meta"], "w") as fh:
             json.dump(meta, fh, indent=2, default=str)
 
-        print(f"  wrote {len(frame_names)} frame TIFFs, average, mask"
+        print(f"  wrote {len(frame_names)} frame TIFFs, mask"
               f"{', poni' if meta['poni_file'] else ''} -> {out_dir}")
         print(f"  dist={meta['distance_mm']} mm  wl={meta['wavelength_A']} A  "
               f"beam=({meta['beam_center_x_px']}, {meta['beam_center_z_px']}) px  "
@@ -404,13 +383,9 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("input", help=".nxs file or directory containing .nxs files")
     ap.add_argument("output", help="output directory (one sub-folder per .nxs)")
-    ap.add_argument("--no-frames", action="store_true",
-                    help="skip individual frames, write only average + mask")
     ap.add_argument("--gap-value", type=int, default=0,
                     help="value written into gap pixels of frame TIFFs (default 0; "
                          "negative -> int32 output)")
-    ap.add_argument("--pos-avg", action="store_true",
-                    help="also write one averaged TIFF per sample position")
     ap.add_argument("--overwrite", action="store_true", help="re-write existing frame TIFFs")
     ap.add_argument("--recursive", action="store_true", help="search sub-directories too")
     args = ap.parse_args()
@@ -427,8 +402,7 @@ def main():
     failed = []
     for f in files:
         try:
-            convert_file(f, args.output, write_frames=not args.no_frames,
-                         gap_value=args.gap_value, pos_avg=args.pos_avg,
+            convert_file(f, args.output, gap_value=args.gap_value,
                          overwrite=args.overwrite)
         except Exception as e:                      # keep going on bad files
             print(f"  !! FAILED {f.name}: {e}")

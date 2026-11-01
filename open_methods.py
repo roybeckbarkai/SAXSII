@@ -227,7 +227,7 @@ def load_nxs(self, FP=None):
     nxs_path = Path(filepath)
     paths = output_paths(nxs_path, nxs_path.parent)
     try:
-        if not all(paths[k].exists() for k in ('average', 'mask', 'meta')):
+        if not all(paths[k].exists() for k in ('mask', 'meta')):
             self.frame.setText('Converting {} ...'.format(nxs_path.name))
             QApplication.setOverrideCursor(Qt.WaitCursor)
 
