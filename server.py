@@ -11,7 +11,9 @@ from pathlib import Path
 import numpy as np
 from flask import Flask, jsonify, request, send_file, send_from_directory, redirect
 
+import beamstop
 import image_io
+import native_dialogs
 from anis_finder import anisotropy_map, chi_profile, pixel_chi_map, pixel_q_map
 from integration_methods import (UNITS, UserError, build_mask, cake, calibration_info, integrate_1d,
                                  load_poni, q_to_radius_px, set_calibration, unit_factor)
@@ -36,7 +38,11 @@ DEFAULT_SETTINGS = {
     "sigma_thres": 1000.0,
     "q_min": None,  # A^-1
     "q_max": None,  # A^-1
+    # automatic beamstop mask: detection parameters + the image it was detected on
+    "beamstop": {"enabled": False, **beamstop.DEFAULTS, "ref": None},
+    "recent": {"folder": [], "poni": [], "mask": [], "nxs": []},  # most recent first
 }
+RECENT_MAX = 8
 
 
 class State:
@@ -50,6 +56,8 @@ class State:
         self.curves = {}  # name -> {radial (A^-1), intensity, sigma}
         self.markers = {}  # name -> q (A^-1)
         self._maps = {}  # (kind, shape) -> cached per-pixel q / chi arrays
+        self.beamstop_mask = None  # detected on settings["beamstop"]["ref"], used for every image
+        self.beamstop_stats = None
 
     # -- persistence
     def load_settings(self):
@@ -59,6 +67,9 @@ class State:
             return
         except Exception:
             log.exception("could not read settings")
+        self.settings["beamstop"] = {**DEFAULT_SETTINGS["beamstop"], **(self.settings.get("beamstop") or {})}
+        self.settings["recent"] = {k: list(v) for k, v in
+                                   {**DEFAULT_SETTINGS["recent"], **(self.settings.get("recent") or {})}.items()}
         for key, loader in (("poni", self.set_poni), ("mask", self.set_mask)):
             if self.settings.get(key):
                 try:
@@ -66,6 +77,15 @@ class State:
                 except UserError as e:
                     log.warning("could not restore %s: %s", key, e)
                     self.settings[key] = ""
+
+    def remember(self, kind, path):
+        """Put a successfully loaded path at the top of its recent list."""
+        lst = self.settings["recent"].setdefault(kind, [])
+        path = str(path)
+        if path in lst:
+            lst.remove(path)
+        lst.insert(0, path)
+        del lst[RECENT_MAX:]
 
     def save_settings(self):
         try:
@@ -80,7 +100,13 @@ class State:
         else:
             self.ai = load_poni(path)
             self.settings["poni"] = str(path)
+            self.remember("poni", path)
+        self.geometry_changed()
+
+    def geometry_changed(self):
+        """Beam center / mask changed: cached maps and the beamstop detection are stale."""
         self._maps.clear()
+        self.beamstop_mask = self.beamstop_stats = None
 
     def set_mask(self, path):
         if not path:
@@ -88,6 +114,8 @@ class State:
         else:
             self.user_mask = image_io.read_mask(path)
             self.settings["mask"] = str(path)
+            self.remember("mask", path)
+        self.beamstop_mask = self.beamstop_stats = None
 
     def require_ai(self):
         if self.ai is None:
@@ -104,7 +132,35 @@ class State:
         return image_io.read_image(self.require_folder(), image_id)
 
     def mask_for(self, image):
-        return build_mask(self.ai, image, self.user_mask)
+        mask = build_mask(self.ai, image, self.user_mask)
+        bs = self.beamstop_for(image.shape)
+        if bs is not None:
+            mask |= bs
+        return mask
+
+    def beamstop_for(self, shape):
+        """The auto beamstop mask if enabled (re-detected lazily after geometry changes)."""
+        cfg = self.settings["beamstop"]
+        if not cfg["enabled"] or self.ai is None:
+            return None
+        if self.beamstop_mask is None and cfg.get("ref"):
+            try:
+                self.detect_beamstop(cfg["ref"])
+            except UserError as e:
+                log.warning("beamstop detection on %s failed: %s", cfg["ref"], e)
+                return None
+        m = self.beamstop_mask
+        return m if m is not None and m.shape == shape else None
+
+    def detect_beamstop(self, image_id):
+        ai = self.require_ai()
+        img = self.image(image_id)
+        cfg = self.settings["beamstop"]
+        cal = calibration_info(ai)
+        self.beamstop_mask, self.beamstop_stats = beamstop.detect_beamstop(
+            img, build_mask(ai, img, self.user_mask), (cal["center_x"], cal["center_y"]),
+            **{k: cfg[k] for k in beamstop.DEFAULTS})
+        self.beamstop_stats["ref"] = cfg["ref"] = image_id
 
     def pixel_map(self, kind, shape):
         key = (kind, shape)
@@ -126,6 +182,7 @@ class State:
             "curves": sorted(self.curves),
             "markers": self.markers,
             "mask_loaded": self.user_mask is not None,
+            "beamstop_stats": self.beamstop_stats,
         }
 
 
@@ -241,12 +298,44 @@ def post_settings():
 
 @app.post("/api/folder")
 def open_folder():
-    path = (body().get("path") or "").strip()
+    path = (body().get("path") or "").strip().strip('"')
+    if not path:
+        raise UserError("Choose an image folder.")
     with state.lock:
         files = image_io.list_images(path)
-        state.settings["folder"] = str(Path(path))
+        folder = Path(path)
+        state.settings["folder"] = str(folder)
+        state.remember("folder", folder)
+        # Convenience: a single PONI / mask file in the folder is loaded if none is loaded yet.
+        auto = []
+        for key, pattern, loader in (("poni", "*.poni", state.set_poni), ("mask", "*.msk", state.set_mask)):
+            found = sorted(folder.glob(pattern))
+            if not state.settings.get(key) and len(found) == 1:
+                try:
+                    loader(str(found[0]))
+                    auto.append(found[0].name)
+                except UserError as e:
+                    log.warning("could not auto-load %s: %s", found[0], e)
         state.save_settings()
-        return jsonify(folder=state.settings["folder"], files=files)
+        return jsonify(folder=state.settings["folder"], files=files, auto_loaded=auto, state=state.public())
+
+
+@app.post("/api/pick")
+def pick():
+    """Open a native file / folder dialog on this computer (blocks until it is closed)."""
+    b = body()
+    kind = b.get("kind")
+    if kind not in native_dialogs.KINDS:
+        raise UserError(f"Unknown dialog: {kind}")
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        # The dialog would open on the server's screen, not the remote user's.
+        return jsonify(error="Native dialogs unavailable: browser is on another computer", native=False), 501
+    initial = b.get("initial") or state.settings.get("folder") or None
+    try:
+        out = native_dialogs.ask(kind, initial)  # not under state.lock: the user may take a while
+    except native_dialogs.DialogUnavailable as e:
+        return jsonify(error=f"Native dialogs unavailable: {e}", native=False), 501
+    return jsonify(path=out if isinstance(out, str) else None, paths=out if isinstance(out, list) else None)
 
 
 @app.get("/api/files")
@@ -316,6 +405,8 @@ def load_nxs():
                 log.exception("NXS conversion failed")
                 raise UserError(f"Could not convert {path.name}: {e}") from e
         state.settings["folder"] = str(paths["dir"])
+        state.remember("folder", paths["dir"])
+        state.remember("nxs", path)
         state.set_mask(str(paths["mask"]))
         warning = None
         if paths["poni"].exists():
@@ -324,6 +415,53 @@ def load_nxs():
             warning = f"{path.name} does not contain enough geometry to build a PONI file. Load a PONI file or use the calibration tool."
         state.save_settings()
         return jsonify({**state.public(), "files": image_io.list_images(paths["dir"]), "warning": warning})
+
+
+@app.post("/api/beamstop")
+def post_beamstop():
+    """Update the auto-beamstop parameters and (if enabled) re-detect on image `id`."""
+    b = body()
+    with state.lock:
+        cfg = state.settings["beamstop"]
+        if "enabled" in b:
+            cfg["enabled"] = bool(b["enabled"])
+        for key, cast, lo, hi in (("threshold", float, 0.01, 0.99), ("smooth", float, 0, 20),
+                                  ("margin", int, 0, 100), ("min_area", int, 0, 10 ** 6)):
+            if key in b:
+                cfg[key] = min(max(num(b[key], key, cast), lo), hi)
+        if "bridge_gaps" in b:
+            cfg["bridge_gaps"] = bool(b["bridge_gaps"])
+        state.beamstop_mask = state.beamstop_stats = None
+        if cfg["enabled"]:
+            ref = b.get("id") or cfg.get("ref")
+            if not ref:
+                raise UserError("Select an image to detect the beamstop on.")
+            state.detect_beamstop(ref)
+        state.save_settings()
+        return jsonify(state.public())
+
+
+@app.post("/api/beamstop/save")
+def save_beamstop():
+    """Write user mask + beamstop as a pyFAI-compatible .msk (EDF) file in the image folder."""
+    import fabio
+    name = (body().get("name") or "").strip()
+    if not name:
+        raise UserError("Enter a file name.")
+    if not name.lower().endswith((".msk", ".edf")):
+        name += ".msk"
+    with state.lock:
+        bs = state.beamstop_mask
+        if bs is None:
+            raise UserError("Detect the beamstop first.")
+        path = Path(state.require_folder()) / name
+        if path.exists():
+            raise UserError(f"{name} already exists.")
+        mask = bs.copy()
+        if state.user_mask is not None and state.user_mask.shape == bs.shape:
+            mask |= state.user_mask
+        fabio.edfimage.EdfImage(data=mask.astype(np.uint8)).write(str(path))
+        return jsonify(path=str(path))
 
 
 @app.post("/api/calibration")
@@ -336,7 +474,7 @@ def post_calibration():
                         center_x=num(b.get("center_x"), "Center X", allow_none=True),
                         center_y=num(b.get("center_y"), "Center Y", allow_none=True),
                         wavelength_A=num(b.get("wavelength_A"), "Wavelength", allow_none=True))
-        state._maps.clear()
+        state.geometry_changed()
         return jsonify(state.public())
 
 
@@ -371,9 +509,10 @@ def render():
         out = {"id": image_id, "view": view}
         if view == "raw":
             out.update(render_view(img, b))
-            mask = state.mask_for(img)
-            if mask.any():
-                out["mask_png"] = image_io.render_mask_png(mask)
+            mask = build_mask(state.ai, img, state.user_mask)
+            bs = state.beamstop_for(img.shape)
+            if mask.any() or bs is not None:
+                out["mask_png"] = image_io.render_mask_png(mask, beamstop=bs)
         elif view == "cake":
             ai = state.require_ai()
             res = cake(ai, img, state.mask_for(img), npt_rad=num(b.get("npt_rad", 500), "radial points", int),
@@ -415,6 +554,9 @@ def pixel():
             out["r"] = float(np.hypot(x + 0.5 - cal["center_x"], y + 0.5 - cal["center_y"]))
         if state.user_mask is not None and state.user_mask.shape == img.shape:
             out["masked"] = bool(state.user_mask[y, x])
+        bs = state.beamstop_for(img.shape)
+        if bs is not None and bs[y, x]:
+            out["masked"] = "beamstop"
         return jsonify(out)
 
 
@@ -562,7 +704,13 @@ def load_dat_curves():
     with state.lock:
         folder = Path(state.require_folder())
         for fname in names:
-            df = pd.read_csv(folder / fname, comment="#")
+            path = folder / fname  # fname may also be an absolute path (native dialog)
+            if not path.is_file():
+                raise UserError(f"File not found: {path}")
+            try:
+                df = pd.read_csv(path, comment="#")
+            except Exception as e:
+                raise UserError(f"Could not read {path.name}: {e}") from e
             col = df.columns[0]
             unit = col.split("radial-", 1)[-1] if col.startswith("radial-") else "q_A^-1"
             f = unit_factor(unit) if unit in UNITS else 1.0

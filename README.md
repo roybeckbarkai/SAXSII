@@ -20,6 +20,10 @@ The server listens on `127.0.0.1` only. Folder, PONI, mask and integration setti
 2. **Calibration** – load a `.poni` file (from `pyFAI-calib2`) and optionally a `.msk` mask.
    Negative pixels (detector gaps), integer-saturated pixels and the detector's own mask are always excluded.
    The geometry panel lets you adjust distance / wavelength / beam center (or click *Set center* on the image).
+   **Auto-mask beamstop** finds the beamstop disk and arm on the shown image (dark region connected to
+   the beam center, compared with the typical intensity at the same radius) and applies it to every image.
+   It is drawn in cyan; tune it with the sliders (darkness threshold, smoothing, safety margin, minimum patch
+   size) and save it as a `.msk` file if wanted.
 3. **Integration** – choose bins, unit and an optional q range (type it or *Pick q min/max* on the image,
    cake or curve). Each integrated image is saved next to it as `<name>.dat`.
 4. **1D curves** – overlay, background-subtract (`sample − f·background`, errors in quadrature),
@@ -39,6 +43,7 @@ The server listens on `127.0.0.1` only. Folder, PONI, mask and integration setti
 | `server.py` | Flask JSON API and app state |
 | `integration_methods.py` | pyFAI integration, caking, masks, geometry |
 | `anis_finder.py` | isotropic reference, anisotropy maps, χ profile |
+| `beamstop.py` | automatic beamstop / arm detection |
 | `image_io.py` | folder listing, image/HDF5 reading, PNG rendering |
 | `saving_methods.py` | `.dat` / `.csv` / `.tif` writers |
 | `web/` | browser frontend (plain JS + Plotly) |

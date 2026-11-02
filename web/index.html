@@ -22,10 +22,11 @@
   <aside class="panel left">
     <section>
       <h2>Images</h2>
-      <div class="row">
-        <input id="folder-input" placeholder="Image folder path" spellcheck="false">
-        <button data-browse="folder" title="Browse">…</button>
-        <button id="folder-open" class="primary">Open</button>
+      <div class="picker" data-kind="folder">
+        <div class="picker-text"><span class="picker-label">Image folder</span><b class="picker-name"></b><span class="picker-path"></span></div>
+        <button type="button" class="picker-browse">Browse…</button>
+        <button type="button" class="picker-more" title="Recent, or paste a path">▾</button>
+        <div class="picker-menu" hidden></div>
       </div>
       <button id="nxs-load" title="Convert a NeXus file to per-frame TIFFs + mask + PONI and load them">Load NXS file…</button>
       <input id="file-filter" placeholder="Filter files" spellcheck="false">
@@ -42,14 +43,44 @@
 
     <section>
       <h2>Calibration</h2>
-      <label class="field">PONI
-        <span class="row"><input id="poni-input" placeholder="path/to/file.poni" spellcheck="false">
-          <button data-browse="poni" title="Browse">…</button><button id="poni-load">Load</button></span>
-      </label>
-      <label class="field">Mask
-        <span class="row"><input id="mask-input" placeholder="path/to/mask.msk (optional)" spellcheck="false">
-          <button data-browse="mask" title="Browse">…</button><button id="mask-load">Load</button></span>
-      </label>
+      <div class="picker" data-kind="poni">
+        <div class="picker-text"><span class="picker-label">PONI calibration</span><b class="picker-name"></b><span class="picker-path"></span></div>
+        <button type="button" class="picker-browse">Browse…</button>
+        <button type="button" class="picker-more" title="Recent, or paste a path">▾</button>
+        <div class="picker-menu" hidden></div>
+      </div>
+      <div class="picker" data-kind="mask">
+        <div class="picker-text"><span class="picker-label">Mask file (optional)</span><b class="picker-name"></b><span class="picker-path"></span></div>
+        <button type="button" class="picker-browse">Browse…</button>
+        <button type="button" class="picker-more" title="Recent, or paste a path">▾</button>
+        <div class="picker-menu" hidden></div>
+      </div>
+      <div class="bs-box">
+        <label class="bs-head"><input type="checkbox" id="bs-enable"> Auto-mask beamstop</label>
+        <div id="bs-controls">
+          <p class="muted small">Shown in <span class="bs-swatch"></span> cyan on the image (gaps / loaded mask in magenta).
+            Detected once and applied to every image.</p>
+          <label class="slider" title="A pixel counts as shadowed when its intensity is below this fraction of the typical intensity at the same distance from the center. Raise it if the beamstop edge or arm is missed; lower it if real weak scattering gets masked.">
+            <span>Darkness threshold <output id="bs-threshold-v"></output></span>
+            <input type="range" id="bs-threshold" data-key="threshold" min="0.02" max="0.9" step="0.01"></label>
+          <label class="slider" title="Gaussian smoothing before comparing. Increase for noisy / low-count images (speckled mask); decrease to follow sharp edges.">
+            <span>Smoothing <output id="bs-smooth-v"></output> px</span>
+            <input type="range" id="bs-smooth" data-key="smooth" min="0" max="8" step="0.5"></label>
+          <label class="slider" title="Grow the mask by this many pixels to cover the blurred edge of the shadow.">
+            <span>Safety margin <output id="bs-margin-v"></output> px</span>
+            <input type="range" id="bs-margin" data-key="margin" min="0" max="20" step="1"></label>
+          <label class="slider" title="Ignore detached dark patches smaller than this.">
+            <span>Ignore patches below <output id="bs-min_area-v"></output> px</span>
+            <input type="range" id="bs-min_area" data-key="min_area" min="0" max="3000" step="50"></label>
+          <label class="small" title="Let the beamstop arm continue across detector module gaps."><input type="checkbox" id="bs-bridge"> Follow the arm across detector gaps</label>
+          <p id="bs-info" class="small"></p>
+          <div class="row">
+            <button id="bs-detect" title="Re-detect using the image shown now">Detect on this image</button>
+            <button id="bs-reset" title="Restore default parameters">Defaults</button>
+            <button id="bs-save" title="Save beamstop + loaded mask as a .msk file in the image folder">Save .msk…</button>
+          </div>
+        </div>
+      </div>
       <button id="calib-tool">Open pyFAI calibration tool</button>
     </section>
 

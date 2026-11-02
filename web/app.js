@@ -84,9 +84,7 @@ function applyState(st) {
   S.st = st;
   const s = st.settings;
   const f = st.unit_factor;
-  $("#folder-input").value ||= s.folder || "";
-  $("#poni-input").value = s.poni || "";
-  $("#mask-input").value = s.mask || "";
+  renderPickers(st);
   $("#bins").value = s.bins;
   $("#sigma").value = s.sigma_thres;
   const unit = $("#unit");
@@ -106,6 +104,7 @@ function applyState(st) {
 
   renderCurveList(st.curves);
   renderMarkers(st.markers);
+  applyBeamstop(st);
 }
 
 async function refreshState() {
@@ -189,14 +188,13 @@ $("#file-filter").addEventListener("input", renderFileList);
 
 async function openFolder(path) {
   const r = await api("/api/folder", { path });
-  $("#folder-input").value = r.folder;
-  $("#folder-label").textContent = r.folder;
+  applyState(r.state);
   S.sel.clear(); S.current = null;
   setFiles(r.files);
   if (S.trackTimer) startTracking();
+  if (r.auto_loaded.length) toast(`Also loaded ${r.auto_loaded.join(" and ")} found in this folder`, "info");
+  showView();
 }
-$("#folder-open").onclick = () => run("Opening folder", () => openFolder($("#folder-input").value));
-$("#folder-input").addEventListener("keydown", e => e.key === "Enter" && $("#folder-open").click());
 
 // folder tracking (polling - works for network drives too)
 function startTracking() {
@@ -228,29 +226,187 @@ $("#track").onchange = e => {
 
 // ----------------------------------------------------------------------------- calibration / settings
 
-$("#poni-load").onclick = () => run("Loading PONI", async () => {
-  applyState(await api("/api/poni", { path: $("#poni-input").value }));
-  toast("PONI loaded", "info");
-  showView();
+// ----------------------------------------------------------------------------- folder / PONI / mask pickers
+
+const baseName = p => (p || "").split(/[\\/]/).filter(Boolean).pop() || p;
+
+const PICKERS = {
+  folder: { empty: "No folder open", load: p => run("Opening folder", () => openFolder(p)) },
+  poni: {
+    empty: "No PONI loaded", load: p => run("Loading PONI", async () => {
+      applyState(await api("/api/poni", { path: p }));
+      toast(`Loaded ${baseName(p)}`, "info");
+      showView();
+    }),
+  },
+  mask: {
+    empty: "None – gaps are still masked", clearable: true, load: p => run(p ? "Loading mask" : "Removing mask", async () => {
+      applyState(await api("/api/mask", { path: p }));
+      toast(p ? `Loaded ${baseName(p)}` : "Mask removed", "info");
+      showView();
+    }),
+  },
+};
+
+function renderPickers(st) {
+  for (const [kind, cfg] of Object.entries(PICKERS)) {
+    const box = $(`.picker[data-kind=${kind}]`), path = st.settings[kind];
+    const name = $(".picker-name", box);
+    name.textContent = path ? baseName(path) : cfg.empty;
+    name.classList.toggle("empty", !path);
+    $(".picker-path", box).textContent = path || "";
+    $(".picker-text", box).title = path || "";
+  }
+  $("#folder-label").textContent = st.settings.folder || "No folder";
+}
+
+/** Ask for a path with the operating system's own dialog (falls back to the in-page browser). */
+async function pickPath(kind) {
+  const s = S.st?.settings || {};
+  const initial = (kind === "folder" ? s.folder : s[kind]) || s.folder || "";
+  status("A file dialog is open (it may be behind this window)…", true);
+  try {
+    const r = await api("/api/pick", { kind, initial });
+    return r.paths ?? r.path;
+  } catch (e) {
+    if (!/Native dialogs unavailable/.test(e.message)) throw e;
+    const fallback = {
+      folder: { title: "Choose image folder", dirMode: true }, poni: { title: "Choose PONI file", exts: ".poni" },
+      mask: { title: "Choose mask file", exts: ".msk,.edf,.tif,.tiff" }, nxs: { title: "Choose NeXus file", exts: ".nxs,.h5,.hdf5" },
+      dat: { title: "Load .dat curves", exts: ".dat", multi: true },
+    }[kind];
+    status("");
+    return await browse({ ...fallback, path: initial });
+  } finally {
+    status("");
+  }
+}
+
+function closePickerMenus(except) {
+  $$(".picker-menu").forEach(m => { if (m !== except) m.hidden = true; });
+}
+
+function openPickerMenu(box) {
+  const kind = box.dataset.kind, cfg = PICKERS[kind], menu = $(".picker-menu", box);
+  if (!menu.hidden) return (menu.hidden = true);
+  closePickerMenus(menu);
+  const recent = (S.st?.settings.recent?.[kind] || []).filter(p => p !== S.st.settings[kind]);
+  menu.innerHTML = `<input class="picker-paste" placeholder="Paste a path and press Enter" spellcheck="false">` +
+    (recent.length ? `<h4>Recent</h4>` + recent.map(p => `<button type="button" class="picker-item" data-path="${esc(p)}"><b>${esc(baseName(p))}</b><span>${esc(p)}</span></button>`).join("")
+      : `<p class="muted small" style="margin:4px 6px">Nothing recent yet.</p>`) +
+    (cfg.clearable && S.st?.settings[kind] ? `<button type="button" class="picker-item danger" data-path="">Remove mask</button>` : "");
+  menu.hidden = false;
+  const input = $(".picker-paste", menu);
+  input.focus();
+  input.onkeydown = e => {
+    if (e.key === "Enter" && input.value.trim()) { menu.hidden = true; cfg.load(input.value.trim().replace(/^"|"$/g, "")); }
+    if (e.key === "Escape") menu.hidden = true;
+  };
+  menu.onclick = e => {
+    const item = e.target.closest(".picker-item");
+    if (!item) return;
+    menu.hidden = true;
+    cfg.load(item.dataset.path);
+  };
+}
+
+$$(".picker").forEach(box => {
+  const kind = box.dataset.kind;
+  $(".picker-browse", box).onclick = async () => {
+    closePickerMenus();
+    try {
+      const p = await pickPath(kind);
+      if (p) PICKERS[kind].load(p);
+    } catch (e) { toast(e.message); }
+  };
+  $(".picker-more", box).onclick = () => openPickerMenu(box);
 });
-$("#mask-load").onclick = () => run("Loading mask", async () => {
-  applyState(await api("/api/mask", { path: $("#mask-input").value }));
-  toast($("#mask-input").value ? "Mask loaded" : "Mask cleared", "info");
-  showView();
-});
+document.addEventListener("click", e => { if (!e.target.closest(".picker")) closePickerMenus(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") closePickerMenus(); });
+
 $("#nxs-load").onclick = async () => {
-  const path = await browse({ title: "Choose NeXus file", exts: ".nxs,.h5", path: S.st?.settings.folder || "" });
+  let path;
+  try { path = await pickPath("nxs"); } catch (e) { return toast(e.message); }
   if (!path) return;
   run("Converting NeXus file (may take a while)", async () => {
     const r = await api("/api/nxs", { path });
     applyState(r);
-    $("#folder-input").value = $("#folder-label").textContent = r.settings.folder;
     S.sel.clear(); S.current = null;
     setFiles(r.files);
     if (r.warning) toast(r.warning); else toast("NeXus file converted and loaded", "info");
     showView();
   });
 };
+// ----------------------------------------------------------------------------- auto beamstop mask
+
+const BS_KEYS = ["threshold", "smooth", "margin", "min_area"];
+const BS_DEFAULTS = { threshold: 0.3, smooth: 2, margin: 3, min_area: 200, bridge_gaps: true };
+
+function applyBeamstop(st) {
+  const cfg = st.settings.beamstop || {};
+  $("#bs-enable").checked = !!cfg.enabled;
+  $("#bs-controls").classList.toggle("hidden", !cfg.enabled);
+  for (const k of BS_KEYS) {
+    const el = $("#bs-" + k);
+    if (document.activeElement !== el) el.value = cfg[k];  // don't fight a slider being dragged
+    $(`#bs-${k}-v`).textContent = el.value;
+  }
+  $("#bs-bridge").checked = !!cfg.bridge_gaps;
+  const info = $("#bs-info"), s = st.beamstop_stats;
+  info.classList.remove("warn");
+  if (!cfg.enabled) info.textContent = "";
+  else if (!s) info.textContent = "Not detected yet – select an image and press “Detect on this image”.";
+  else if (!s.disk_radius_px) {
+    info.textContent = `No beamstop disk found on ${s.ref}: only ${s.pixels} px at the center are masked. Try a higher threshold, or check the beam center.`;
+    info.classList.add("warn");
+  } else {
+    info.textContent = `Detected on ${s.ref}: disk radius ≈ ${s.disk_radius_px} px, ${s.pixels.toLocaleString()} px masked` +
+      (s.arm_pixels ? ` (${s.arm_pixels.toLocaleString()} in the arm / beyond the disk).` : " (no arm found).");
+  }
+}
+
+let bsSeq = 0;
+/** Send beamstop parameters, re-detect on the shown image and redraw. */
+async function updateBeamstop(patch) {
+  const seq = ++bsSeq;
+  const body = { ...patch };
+  if (S.current) body.id = S.current;
+  await run("Detecting beamstop", async () => {
+    const st = await api("/api/beamstop", body);
+    if (seq !== bsSeq) return;  // a newer slider position is already on its way
+    applyState(st);
+    if (S.tab !== "curves" && S.current) await render2D();
+  });
+}
+
+$("#bs-enable").onchange = e => {
+  if (e.target.checked && !S.current) {
+    e.target.checked = false;
+    return toast("Select an image (ideally one with good statistics) to detect the beamstop on.");
+  }
+  if (e.target.checked && S.tab !== "image" && S.tab !== "anis") switchTab("image");
+  updateBeamstop({ enabled: e.target.checked });
+};
+let bsTimer;
+for (const k of BS_KEYS) {
+  const el = $("#bs-" + k);
+  el.oninput = () => {
+    $(`#bs-${k}-v`).textContent = el.value;
+    clearTimeout(bsTimer);
+    bsTimer = setTimeout(() => updateBeamstop({ [k]: el.value }), 250);
+  };
+}
+$("#bs-bridge").onchange = e => updateBeamstop({ bridge_gaps: e.target.checked });
+$("#bs-detect").onclick = () => S.current ? updateBeamstop({}) : toast("Select an image first.");
+$("#bs-reset").onclick = () => updateBeamstop({ ...BS_DEFAULTS });
+$("#bs-save").onclick = async () => {
+  const v = await dialog("Save beamstop mask", `<p class="muted">Beamstop + loaded mask, as a pyFAI-compatible .msk (EDF) file in the image folder.
+    Gaps are always masked automatically, so they don't need to be in it.</p>
+    <label class="field">File name<input name="name" value="beamstop_mask.msk" required></label>`);
+  if (!v) return;
+  run("Saving mask", async () => toast(`Saved ${(await api("/api/beamstop/save", v)).path}`, "info"));
+};
+
 $("#calib-tool").onclick = () => run("Starting pyFAI-calib2", () => api("/api/calib_tool", {}));
 
 async function postSettings(patch) {
@@ -465,12 +621,13 @@ $("#curve-export").onclick = () => run("Exporting", async () => {
   toast(`Saved ${r.paths.length} CSV file(s) to the image folder`, "info");
 });
 $("#curve-load").onclick = async () => {
-  const files = await browse({ title: "Load .dat curves", exts: ".dat", multi: true, path: S.st.settings.folder, lockDir: true });
-  if (!files) return;
+  let files;
+  try { files = await pickPath("dat"); } catch (e) { return toast(e.message); }
+  if (!files?.length) return;
   run("Loading curves", async () => {
     const r = await api("/api/curves/load_dat", { files });
     S.st.curves = r.curves; renderCurveList(r.curves);
-    files.forEach(f => S.curveSel.add(f.replace(/\.dat$/i, "")));
+    files.forEach(f => S.curveSel.add(baseName(f).replace(/\.dat$/i, "")));
     switchTab("curves");
   });
 };
@@ -665,7 +822,7 @@ function onPlotHover(ev) {
       if (seq !== hoverSeq || !p.inside) return;
       let html = `x <b>${p.x}</b> · y <b>${p.y}</b> · I <b>${fmt(p.value)}</b>`;
       if (p.q !== undefined) html += ` · r <b>${fmt(p.r, 1)}</b> px · ${esc(unitLabel())} <b>${fmt(p.q)}</b> · χ <b>${fmt(p.chi, 1)}°</b>`;
-      if (p.masked) html += ` · <b>masked</b>`;
+      if (p.masked) html += ` · <b>${p.masked === "beamstop" ? "beamstop (auto)" : "masked"}</b>`;
       ro.innerHTML = html;
     } catch { /* ignore */ }
   }, 60);
@@ -763,24 +920,12 @@ function browse({ title, exts = "", dirMode = false, multi = false, path = "", l
       if (dlg.returnValue !== "ok" || !cur) return resolve(null);
       if (dirMode) return resolve(cur.path);
       if (!chosen.size) return resolve(null);
-      resolve(multi ? [...chosen] : join(cur.path, [...chosen][0]));
+      resolve(multi ? [...chosen].map(f => join(cur.path, f)) : join(cur.path, [...chosen][0]));
     }, { once: true });
     dlg.showModal();
     go(path);
   });
 }
-
-const BROWSE = {
-  folder: { title: "Choose image folder", dirMode: true, input: "#folder-input", after: () => $("#folder-open").click() },
-  poni: { title: "Choose PONI file", exts: ".poni", input: "#poni-input", after: () => $("#poni-load").click() },
-  mask: { title: "Choose mask file", exts: ".msk,.edf,.tif,.tiff", input: "#mask-input", after: () => $("#mask-load").click() },
-};
-$$("[data-browse]").forEach(b => (b.onclick = async () => {
-  const cfg = BROWSE[b.dataset.browse];
-  const start = $(cfg.input).value || S.st?.settings.folder || "";
-  const p = await browse({ ...cfg, path: start });
-  if (p) { $(cfg.input).value = p; cfg.after(); }
-}));
 
 // ----------------------------------------------------------------------------- boot
 
