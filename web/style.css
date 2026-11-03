@@ -151,6 +151,17 @@ progress { width: 100%; accent-color: var(--accent); }
 .placeholder img { max-width: 40%; max-height: 50%; opacity: .85; border-radius: 8px; }
 #chi-wrap { height: 230px; border-top: 1px solid var(--border); display: flex; flex-direction: column; }
 .chi-head { display: flex; gap: 10px; padding: 4px 10px; align-items: baseline; flex-wrap: wrap; }
+.chi-actions { display: flex; gap: 6px; padding: 0 10px 4px; flex-wrap: wrap; }
+#results-wrap { height: 38%; min-height: 160px; border-top: 1px solid var(--border); display: flex; flex-direction: column; }
+.res-head { padding: 4px 10px; }
+.table-scroll { flex: 1; overflow: auto; }
+#res-table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#res-table th, #res-table td { padding: 3px 10px; border-bottom: 1px solid var(--border); text-align: right; }
+#res-table th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 600; cursor: pointer; }
+#res-table th:first-child, #res-table td:first-child { text-align: left; }
+#res-table tbody tr { cursor: pointer; }
+#res-table tbody tr:hover { background: color-mix(in srgb, var(--sel) 50%, transparent); }
+#res-table tbody tr.selected { background: var(--sel); }
 #chi-metrics { margin-left: auto; font-variant-numeric: tabular-nums; }
 #chi-plot { flex: 1; min-height: 0; }
 .readout { padding: 4px 10px; border-top: 1px solid var(--border); background: var(--panel); font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; overflow: hidden; }

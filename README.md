@@ -33,6 +33,11 @@ The server listens on `127.0.0.1` only. Folder, PONI, mask and integration setti
    `I / I_iso − 1` (relative) or `I − I_iso` (absolute), signed and shown on a diverging colormap.
    With a q range set, the panel below shows I(χ) and the fit `I(χ) = I₀[1 + A cos 2(χ − φ)]`:
    **A** is the anisotropy amplitude (0 = isotropic) and **φ** the orientation (pyFAI χ convention).
+   *Save to results* / *Run on selected* / *Run on all* store each I(χ) + fit in `analysis/anisotropy/`
+   and A, φ, … in `analysis/anisotropy_results.csv`; *Save map* writes the map as a float32 TIFF.
+7. **Results** – every saved analysis of the folder (reloaded when you reopen it): a sortable table,
+   any column plotted against any other (image number, acquisition time, A, φ, …), or the saved
+   profiles of selected rows overlaid. *Save figure* (on every plot) writes PNG + SVG to `analysis/figures/`.
    Optional solid-angle and polarization corrections are applied to the image and the reference alike.
 
 ## Code layout
@@ -44,6 +49,8 @@ The server listens on `127.0.0.1` only. Folder, PONI, mask and integration setti
 | `integration_methods.py` | pyFAI integration, caking, masks, geometry |
 | `anis_finder.py` | isotropic reference, anisotropy maps, χ profile |
 | `beamstop.py` | automatic beamstop / arm detection |
+| `results.py` | saved analysis tables (`analysis/<kind>_results.csv`) – register new analyses here |
+| `native_dialogs.py` | system file / folder dialogs |
 | `image_io.py` | folder listing, image/HDF5 reading, PNG rendering |
 | `saving_methods.py` | `.dat` / `.csv` / `.tif` writers |
 | `web/` | browser frontend (plain JS + Plotly) |

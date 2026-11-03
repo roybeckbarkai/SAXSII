@@ -113,6 +113,7 @@
       <button role="tab" data-tab="curves">1D curves</button>
       <button role="tab" data-tab="cake">Cake (q–χ)</button>
       <button role="tab" data-tab="anis">Anisotropy</button>
+      <button role="tab" data-tab="results">Results</button>
     </nav>
 
     <div class="toolbar" id="toolbar-2d">
@@ -132,13 +133,27 @@
         <label title="Divide both the image and its reference by the pixel solid angle"><input type="checkbox" id="anis-sa"> Solid angle</label>
         <label title="Polarization factor (e.g. 0.99 for synchrotron, empty = no correction)">Polarization
           <input id="anis-pol" type="number" step="any" min="-1" max="1" class="tiny" placeholder="off"></label>
+        <button id="anis-save-map" title="Save this map as a float32 TIFF in analysis/anisotropy/">Save map (.tif)</button>
       </span>
+      <button class="save-fig" data-target="plot" title="Save the plot as PNG + SVG in analysis/figures/">Save figure</button>
     </div>
     <div class="toolbar hidden" id="toolbar-1d">
       <label><input type="checkbox" id="logx"> log x</label>
       <label><input type="checkbox" id="logy" checked> log y</label>
       <label><input type="checkbox" id="errbars"> Error bars</label>
       <button data-pick="marker">Add marker</button>
+      <button class="save-fig" data-target="plot" title="Save the plot as PNG + SVG in analysis/figures/">Save figure</button>
+    </div>
+    <div class="toolbar hidden" id="toolbar-results">
+      <label>Table <select id="res-kind"></select></label>
+      <label>Plot <select id="res-mode">
+        <option value="scatter">Y vs X</option>
+        <option value="profiles">Saved profiles of selected rows</option></select></label>
+      <label class="res-xy">X <select id="res-x"></select></label>
+      <label class="res-xy">Y <select id="res-y"></select></label>
+      <button id="res-delete" title="Delete the selected rows from the results file">Delete selected</button>
+      <button id="res-open" title="Open the analysis folder in your file manager">Open folder</button>
+      <button class="save-fig" data-target="plot" title="Save the plot as PNG + SVG in analysis/figures/">Save figure</button>
     </div>
 
     <div id="plot-wrap">
@@ -154,7 +169,17 @@
         <span class="muted">over q min – q max</span>
         <span id="chi-metrics"></span>
       </div>
+      <div class="chi-actions">
+        <button id="anis-save" class="primary" title="Save I(χ) and the fit of this image to analysis/ and the results table">Save to results</button>
+        <button id="anis-run-sel" title="Analyse every selected image with the current q range and corrections">Run on selected</button>
+        <button id="anis-run-all" title="Analyse every image in the folder">Run on all</button>
+        <button class="save-fig" data-target="chi-plot" title="Save this plot as PNG + SVG">Save plot</button>
+      </div>
       <div id="chi-plot"></div>
+    </div>
+    <div id="results-wrap" class="hidden">
+      <div class="res-head"><span id="res-info" class="muted small"></span></div>
+      <div class="table-scroll"><table id="res-table"></table></div>
     </div>
     <footer id="readout" class="readout">&nbsp;</footer>
   </section>

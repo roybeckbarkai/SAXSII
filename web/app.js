@@ -169,7 +169,7 @@ $("#file-list").addEventListener("click", e => {
   if (id === null) return;
   S.current = id;
   renderFileList();
-  if (S.tab === "curves") switchTab("image");
+  if (S.tab === "curves" || S.tab === "results") switchTab("image");
   else showView();
 });
 $("#file-list").addEventListener("keydown", e => {
@@ -442,8 +442,10 @@ $("#cal-reset").onclick = () => run("Reloading PONI", async () => { applyState(a
 function switchTab(tab) {
   S.tab = tab;
   $$(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
-  $("#toolbar-2d").classList.toggle("hidden", tab === "curves");
+  $("#toolbar-2d").classList.toggle("hidden", tab === "curves" || tab === "results");
   $("#toolbar-1d").classList.toggle("hidden", tab !== "curves");
+  $("#toolbar-results").classList.toggle("hidden", tab !== "results");
+  $("#results-wrap").classList.toggle("hidden", tab !== "results");
   $$(".for-image").forEach(el => el.classList.toggle("hidden", tab !== "image"));
   $$(".for-anis").forEach(el => el.classList.toggle("hidden", tab !== "anis"));
   $("#chi-wrap").classList.toggle("hidden", tab !== "anis");
@@ -471,6 +473,7 @@ function showPlaceholder(on, text) {
 
 function showView() {
   if (S.tab === "curves") return plotCurves();
+  if (S.tab === "results") return showResults();
   if (!S.current) return showPlaceholder(true, S.files.length ? "Select an image." : "Open an image folder and a PONI file to start.");
   return render2D();
 }
@@ -527,9 +530,9 @@ function draw2D(r) {
   const traces = [{ type: "image", source: r.png, x0: ax.x0, dx: ax.dx, y0: ax.y0, dy: ax.dy, hoverinfo: "x+y", name: "" }];
   if (r.mask_png && $("#show-mask").checked) traces.push({ type: "image", source: r.mask_png, x0: 0.5, dx: 1, y0: 0.5, dy: 1, hoverinfo: "skip" });
   const layout = Object.assign(baseLayout(), {
-    xaxis: { title: isCake ? unitLabel() : "x (px)", showgrid: false, zeroline: false, constrain: "domain" },
-    yaxis: isCake ? { title: "χ (°)", showgrid: false, zeroline: false, autorange: true, scaleanchor: false }
-      : { title: "y (px)", showgrid: false, zeroline: false, autorange: true, scaleanchor: "x", constrain: "domain" },
+    xaxis: { title: { text: isCake ? unitLabel() : "x (px)" }, showgrid: false, zeroline: false, constrain: "domain" },
+    yaxis: isCake ? { title: { text: "χ (°)" }, showgrid: false, zeroline: false, autorange: true, scaleanchor: false }
+      : { title: { text: "y (px)" }, showgrid: false, zeroline: false, autorange: true, scaleanchor: "x", constrain: "domain" },
     uirevision: `${r.view === "cake" ? "cake" : "det"}:${w}x${h}`,
     dragmode: "pan",
     hovermode: "closest",
@@ -595,8 +598,8 @@ async function plotCurves() {
       if (q != null) shapes.push({ type: "line", xref: "x", yref: "paper", x0: q * f, x1: q * f, y0: 0, y1: 1, line: { color: cssVar("--muted"), width: 1, dash: "dash" } });
     }
     const layout = Object.assign(baseLayout(), {
-      xaxis: { title: r.label, type: $("#logx").checked ? "log" : "linear", gridcolor: cssVar("--border"), zeroline: false },
-      yaxis: { title: "Intensity", type: $("#logy").checked ? "log" : "linear", gridcolor: cssVar("--border"), exponentformat: "power", zeroline: false },
+      xaxis: { title: { text: r.label }, type: $("#logx").checked ? "log" : "linear", gridcolor: cssVar("--border"), zeroline: false },
+      yaxis: { title: { text: "Intensity" }, type: $("#logy").checked ? "log" : "linear", gridcolor: cssVar("--border"), exponentformat: "power", zeroline: false },
       legend: { orientation: "h", y: 1.02, yanchor: "bottom" },
       uirevision: "curves", hovermode: "closest", dragmode: "zoom", shapes, annotations,
     });
@@ -742,15 +745,264 @@ async function chiProfile() {
   const f = unitFactor();
   const layout = Object.assign(baseLayout(), {
     margin: { l: 60, r: 20, t: 6, b: 36 },
-    xaxis: { title: "χ (°)", range: [-180, 180], dtick: 45, gridcolor: cssVar("--border"), zeroline: false },
-    yaxis: { title: "I", gridcolor: cssVar("--border"), zeroline: false },
+    xaxis: { title: { text: "χ (°)" }, range: [-180, 180], dtick: 45, gridcolor: cssVar("--border"), zeroline: false },
+    yaxis: { title: { text: "I" }, gridcolor: cssVar("--border"), zeroline: false },
     showlegend: false,
     shapes: [{ type: "line", x0: m.orientation_deg, x1: m.orientation_deg, yref: "paper", y0: 0, y1: 1, line: { color: "#d62728", dash: "dot", width: 1 } },
       { type: "line", x0: m.orientation_deg - 180 * Math.sign(m.orientation_deg || 1), x1: m.orientation_deg - 180 * Math.sign(m.orientation_deg || 1), yref: "paper", y0: 0, y1: 1, line: { color: "#d62728", dash: "dot", width: 1 } }],
   });
-  Plotly.react(plot, [{ type: "scatter", mode: "lines+markers", x: r.chi, y: r.intensity, marker: { size: 3 }, line: { width: 1.2, color: PALETTE[0] },
-    name: `${fmt(s.q_min * f)}–${fmt(s.q_max * f)}` }], layout, { responsive: true, displaylogo: false });
+  layout.showlegend = true;
+  layout.legend = { orientation: "h", x: 1, xanchor: "right", y: 1, yanchor: "bottom", font: { size: 11 } };
+  Plotly.react(plot, [
+    { type: "scatter", mode: "lines+markers", x: r.chi, y: r.intensity, marker: { size: 3 }, line: { width: 1.2, color: PALETTE[0] },
+      name: `I(χ), q ${fmt(s.q_min * f)}–${fmt(s.q_max * f)}` },
+    { type: "scatter", mode: "lines", x: r.chi, y: r.fit, line: { width: 1.5, color: "#d62728", dash: "dash" }, name: "fit I₀[1 + A cos 2(χ − φ)]" },
+  ], layout, { responsive: true, displaylogo: false });
 }
+
+// ----------------------------------------------------------------------------- saving anisotropy results
+
+function anisParams() {
+  return { solid_angle: $("#anis-sa").checked, polarization: $("#anis-pol").value };
+}
+
+/** Analyse images one by one (progress bar), saving profiles + result rows on the server. */
+async function analyzeAnisotropy(ids) {
+  const s = S.st.settings;
+  if (s.q_min == null || s.q_max == null) return toast("Set q min and q max first (e.g. around the peak).");
+  if (!ids.length) return toast("Select images first.");
+  const prog = $("#progress");
+  prog.hidden = false; prog.max = ids.length; prog.value = 0;
+  let done = 0;
+  try {
+    for (const id of ids) {
+      status(`Anisotropy ${id} (${done + 1}/${ids.length})…`, true);
+      try {
+        await api("/api/anisotropy/analyze", { id, ...anisParams() });
+        done++;
+      } catch (e) {
+        toast(`${id}: ${e.message}`);
+        if (/PONI|folder|q min/.test(e.message)) break;
+      }
+      prog.value = done;
+    }
+  } finally {
+    prog.hidden = true;
+    status("");
+  }
+  if (!done) return;
+  toast(`Saved ${done} result(s) to analysis/anisotropy_results.csv`, "info");
+  if (ids.length > 1) { S.results.kind = "anisotropy"; switchTab("results"); }
+}
+$("#anis-save").onclick = () => S.current ? analyzeAnisotropy([S.current]) : toast("Select an image first.");
+$("#anis-run-sel").onclick = () => analyzeAnisotropy(leafIds().filter(id => S.sel.has(id)));
+$("#anis-run-all").onclick = () => analyzeAnisotropy(leafIds());
+$("#anis-save-map").onclick = () => run("Saving map", async () => {
+  if (!S.current) throw new Error("Select an image first.");
+  const r = await api("/api/anisotropy/save_map", { id: S.current, mode: $("#anis-mode").value, ...anisParams() });
+  toast(`Saved ${r.path}`, "info");
+});
+
+// ----------------------------------------------------------------------------- results tab
+
+S.results = { tables: [], kind: "anisotropy", sel: new Set(), axes: {}, sortKey: null, sortDir: 1 };
+const RES_HIDDEN = new Set(["id", "profile"]);
+
+const resTable = () => S.results.tables.find(t => t.kind === S.results.kind) || S.results.tables[0];
+
+async function showResults() {
+  await run("Loading results", async () => {
+    S.results.tables = (await api("/api/results")).tables;
+    const kindSel = $("#res-kind");
+    kindSel.innerHTML = S.results.tables.map(t => `<option value="${t.kind}">${esc(t.title)} (${t.rows.length})</option>`).join("");
+    const t = resTable();
+    if (!t) return;
+    S.results.kind = kindSel.value = t.kind;
+    const ids = new Set(t.rows.map(r => r.id));
+    for (const id of [...S.results.sel]) if (!ids.has(id)) S.results.sel.delete(id);
+    // axis choices: numeric columns + acquisition time
+    const plottable = t.columns.filter(c => c.numeric || c.key === "time");
+    const ax = S.results.axes[t.kind] ||= { x: "index", y: plottable.find(c => c.key === "amplitude")?.key || plottable[0]?.key };
+    for (const [sel, key] of [["#res-x", "x"], ["#res-y", "y"]]) {
+      $(sel).innerHTML = plottable.map(c => `<option value="${c.key}">${esc(c.label)}</option>`).join("");
+      $(sel).value = ax[key];
+    }
+    $("#res-info").textContent = t.rows.length
+      ? `${t.rows.length} row(s) · saved in ${t.file} · click rows (Ctrl/Shift for several) to highlight them or plot their profiles`
+      : "";
+    renderResultsTable(t);
+    await plotResults(t);
+  });
+}
+
+function sortedRows(t) {
+  const { sortKey, sortDir } = S.results;
+  if (!sortKey) return t.rows;
+  return [...t.rows].sort((a, b) => {
+    const x = a[sortKey], y = b[sortKey];
+    if (x == null) return 1;
+    if (y == null) return -1;
+    return (x > y ? 1 : x < y ? -1 : 0) * sortDir;
+  });
+}
+
+function renderResultsTable(t) {
+  const cols = t.columns.filter(c => !RES_HIDDEN.has(c.key));
+  const cell = (c, v) => v == null ? "" : c.numeric && typeof v === "number" ? fmt(v, 4) : esc(v);
+  const arrow = c => S.results.sortKey === c.key ? (S.results.sortDir > 0 ? " ▲" : " ▼") : "";
+  $("#res-table").innerHTML = `<thead><tr>${cols.map(c => `<th data-key="${c.key}">${esc(c.label)}${arrow(c)}</th>`).join("")}</tr></thead>
+    <tbody>${sortedRows(t).map(r => `<tr data-id="${esc(r.id)}" class="${S.results.sel.has(r.id) ? "selected" : ""}">${cols.map(c => `<td>${cell(c, r[c.key])}</td>`).join("")}</tr>`).join("")}</tbody>`;
+}
+
+$("#res-table").addEventListener("click", e => {
+  const th = e.target.closest("th");
+  if (th) {
+    S.results.sortDir = S.results.sortKey === th.dataset.key ? -S.results.sortDir : 1;
+    S.results.sortKey = th.dataset.key;
+    return renderResultsTable(resTable());
+  }
+  const tr = e.target.closest("tr[data-id]");
+  if (tr) toggleResultRow(tr.dataset.id, e);
+});
+
+function toggleResultRow(id, e) {
+  const sel = S.results.sel;
+  if (e?.shiftKey && S.results.anchor) {
+    const ids = sortedRows(resTable()).map(r => r.id);
+    const [a, b] = [ids.indexOf(S.results.anchor), ids.indexOf(id)].sort((x, y) => x - y);
+    ids.slice(a, b + 1).forEach(i => sel.add(i));
+  } else if (e?.ctrlKey || e?.metaKey) {
+    sel.has(id) ? sel.delete(id) : sel.add(id);
+  } else {
+    const only = sel.size === 1 && sel.has(id);
+    sel.clear();
+    if (!only) sel.add(id);
+  }
+  S.results.anchor = id;
+  const t = resTable();
+  renderResultsTable(t);
+  plotResults(t);
+}
+
+async function plotResults(t) {
+  const mode = $("#res-mode").value;
+  $$(".res-xy").forEach(el => el.classList.toggle("hidden", mode !== "scatter"));
+  if (!t.rows.length) {
+    return showPlaceholder(true, t.kind === "anisotropy"
+      ? "No saved results yet. On the Anisotropy tab, set q min / q max and press “Save to results” or “Run on all”."
+      : "No saved results yet.");
+  }
+  showPlaceholder(false);
+  const label = key => t.columns.find(c => c.key === key)?.label || key;
+  const layout = Object.assign(baseLayout(), {
+    hovermode: "closest", dragmode: "zoom", uirevision: `res:${t.kind}:${mode}`,
+    legend: { orientation: "h", y: 1.02, yanchor: "bottom" },
+  });
+  layout.margin.t = 40;
+  let traces;
+  if (mode === "scatter") {
+    const { x, y } = S.results.axes[t.kind];
+    // one series per parameter set (e.g. q range), sorted along x
+    const groups = new Map();
+    for (const r of t.rows) {
+      const g = t.kind === "anisotropy" ? `q ${fmt(r.q_min_A)}–${fmt(r.q_max_A)} Å⁻¹` : "results";
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(r);
+    }
+    traces = [...groups].map(([g, rows], i) => {
+      rows = rows.filter(r => r[x] != null && r[y] != null).sort((a, b) => (a[x] > b[x] ? 1 : -1));
+      return {
+        type: "scatter", mode: "lines+markers", name: g, x: rows.map(r => r[x]), y: rows.map(r => r[y]),
+        text: rows.map(r => r.image), customdata: rows.map(r => r.id),
+        marker: { size: rows.map(r => S.results.sel.has(r.id) ? 12 : 7), color: PALETTE[i % PALETTE.length],
+          line: { width: rows.map(r => S.results.sel.has(r.id) ? 2 : 0), color: cssVar("--text") } },
+        line: { width: 1, color: PALETTE[i % PALETTE.length] },
+        hovertemplate: "%{text}<br>%{x}<br>%{y}<extra></extra>",
+      };
+    });
+    layout.showlegend = traces.length > 1;
+    layout.xaxis = { title: { text: label(x) }, gridcolor: cssVar("--border"), zeroline: false };
+    layout.yaxis = { title: { text: label(y) }, gridcolor: cssVar("--border"), zeroline: false };
+  } else {
+    let ids = [...S.results.sel];
+    if (!ids.length) ids = t.rows.slice(0, 20).map(r => r.id);
+    const r = await api("/api/results/profiles", { kind: t.kind, ids });
+    traces = r.profiles.flatMap((p, i) => {
+      const [xc, yc, fitc] = p.columns;
+      const color = PALETTE[i % PALETTE.length];
+      const out = [{ type: "scatter", mode: "lines", name: p.label, x: p.data[xc], y: p.data[yc], line: { width: 1.3, color }, legendgroup: p.id }];
+      if (fitc) out.push({ type: "scatter", mode: "lines", name: `${p.label} fit`, x: p.data[xc], y: p.data[fitc], showlegend: false,
+        legendgroup: p.id, line: { width: 1, color, dash: "dash" }, hoverinfo: "skip" });
+      return out;
+    });
+    const xc = r.profiles[0]?.columns[0];
+    layout.xaxis = { title: { text: xc === "chi_deg" ? "χ (°)" : xc }, gridcolor: cssVar("--border"), zeroline: false, ...(xc === "chi_deg" ? { range: [-180, 180], dtick: 45 } : {}) };
+    layout.yaxis = { title: { text: "Intensity" }, gridcolor: cssVar("--border"), zeroline: false };
+    layout.showlegend = true;
+  }
+  Plotly.react($("#plot"), traces, layout, PLOT_CONFIG);
+  bindPlotEvents();
+}
+
+$("#res-kind").onchange = e => { S.results.kind = e.target.value; S.results.sel.clear(); showResults(); };
+$("#res-mode").onchange = () => plotResults(resTable());
+for (const [sel, key] of [["#res-x", "x"], ["#res-y", "y"]]) {
+  $(sel).onchange = e => { S.results.axes[S.results.kind][key] = e.target.value; plotResults(resTable()); };
+}
+$("#res-delete").onclick = () => run("Deleting", async () => {
+  const ids = [...S.results.sel];
+  if (!ids.length) throw new Error("Select rows to delete.");
+  if (!confirm(`Delete ${ids.length} row(s) from the results file? (Saved profile files are kept.)`)) return;
+  await api("/api/results/delete", { kind: S.results.kind, ids });
+  S.results.sel.clear();
+  await showResults();
+});
+$("#res-open").onclick = () => run("Opening folder", () => api("/api/open_folder", {}));
+
+// ----------------------------------------------------------------------------- saving figures
+
+/** Copy of a figure's layout with a white background and dark text (for papers / slides). */
+function lightLayout(layout) {
+  const l = JSON.parse(JSON.stringify(layout));
+  Object.assign(l, { paper_bgcolor: "#ffffff", plot_bgcolor: "#ffffff" });
+  l.font = { ...(l.font || {}), color: "#111111" };
+  for (const k of Object.keys(l)) {
+    if (/^[xy]axis\d*$/.test(k)) Object.assign(l[k], { gridcolor: "#dddddd", linecolor: "#444444", zerolinecolor: "#bbbbbb" });
+  }
+  return l;
+}
+
+function defaultFigureName(target) {
+  const img = S.current ? S.current.replace(/\.[^.]+$/, "").replace(/#/g, "_f") : "figure";
+  if (target === "chi-plot") return `${img}_chi_profile`;
+  return { image: img, cake: `${img}_cake`, anis: `${img}_anisotropy_${$("#anis-mode").value}`,
+    curves: "curves", results: `${S.results.kind}_results` }[S.tab] || img;
+}
+
+$$(".save-fig").forEach(btn => (btn.onclick = async () => {
+  const el = $("#" + btn.dataset.target);
+  if (!el.data?.length) return toast("Nothing plotted yet.");
+  // export size independent of the window: what is on screen, but never smaller than a usable figure
+  const wide = btn.dataset.target === "chi-plot";
+  const w0 = Math.max(Math.round(el._fullLayout?.width || 0), wide ? 1000 : 900);
+  const h0 = Math.max(Math.round(el._fullLayout?.height || 0), wide ? 450 : 600);
+  const v = await dialog("Save figure", `<p class="muted">Saved as PNG (3× resolution) and SVG (vector, editable in Inkscape / Illustrator) in analysis/figures/.</p>
+    <label class="field">File name<input name="name" value="${esc(defaultFigureName(btn.dataset.target))}" required></label>
+    <div class="grid2"><label class="field">Width (px)<input name="width" type="number" min="200" max="4000" value="${w0}" required></label>
+      <label class="field">Height (px)<input name="height" type="number" min="150" max="4000" value="${h0}" required></label></div>
+    <label><input type="checkbox" name="light" checked> White background (for papers / slides)</label>`);
+  if (!v) return;
+  run("Saving figure", async () => {
+    const layout = v.light ? lightLayout(el.layout) : JSON.parse(JSON.stringify(el.layout));
+    delete layout.width; delete layout.height;
+    const fig = { data: el.data, layout };
+    const size = { width: +v.width, height: +v.height };
+    const png = await Plotly.toImage(fig, { format: "png", scale: 3, ...size });
+    const svg = await Plotly.toImage(fig, { format: "svg", ...size });
+    const r = await api("/api/save_figure", { name: v.name, png, svg });
+    toast(`Saved ${r.paths.map(baseName).join(" and ")} in analysis/figures/`, "info");
+  });
+}));
 
 // ----------------------------------------------------------------------------- picking & hover
 
@@ -776,6 +1028,7 @@ async function qAtClick(pt) {
 }
 
 async function onPlotClick(ev) {
+  if (S.tab === "results" && ev.points?.[0]?.customdata) return toggleResultRow(ev.points[0].customdata, ev.event);
   if (!S.pick || !ev.points?.length) return;
   const pt = ev.points[0];
   const mode = S.pick;
@@ -808,6 +1061,10 @@ function onPlotHover(ev) {
   const ro = $("#readout");
   if (S.tab === "curves") {
     ro.innerHTML = `${esc(pt.data.name)} · ${esc(unitLabel())} <b>${fmt(pt.x)}</b> · I <b>${fmt(pt.y)}</b>`;
+    return;
+  }
+  if (S.tab === "results") {
+    ro.innerHTML = `${esc(pt.text || pt.data.name || "")} · x <b>${typeof pt.x === "number" ? fmt(pt.x) : esc(pt.x)}</b> · y <b>${fmt(pt.y)}</b>`;
     return;
   }
   if (S.tab === "cake") {
@@ -860,6 +1117,28 @@ $("#marker-clear").onclick = () => run("Clearing markers", async () => { await a
 // ----------------------------------------------------------------------------- dialogs & file browser
 
 /** Show a form dialog; resolves to {field: value} or null when cancelled. */
+/** Call done(ok) once when the modal is confirmed or dismissed. Driven by the button
+ *  submit / Esc events themselves: the dialog "close" event is not delivered reliably
+ *  in every browser (e.g. embedded webviews). */
+function onModalDone(done) {
+  const dlg = $("#modal"), form = $("#modal-form");
+  let finished = false;
+  const finish = ok => {
+    if (finished) return;
+    finished = true;
+    form.removeEventListener("submit", onSubmit);
+    dlg.removeEventListener("cancel", onCancel);
+    dlg.removeEventListener("close", onClose);
+    done(ok);
+  };
+  const onSubmit = e => finish(e.submitter?.value === "ok");  // fires before the dialog closes
+  const onCancel = () => finish(false);                        // Esc
+  const onClose = () => finish(dlg.returnValue === "ok");      // fallback
+  form.addEventListener("submit", onSubmit);
+  dlg.addEventListener("cancel", onCancel);
+  dlg.addEventListener("close", onClose);
+}
+
 function dialog(title, html, prepare) {
   const dlg = $("#modal");
   $("#modal-title").textContent = title;
@@ -869,10 +1148,7 @@ function dialog(title, html, prepare) {
   dlg.showModal();
   form.querySelector("input:not([type=hidden]), select")?.focus();
   return new Promise(resolve => {
-    dlg.addEventListener("close", () => {
-      if (dlg.returnValue !== "ok") return resolve(null);
-      resolve(Object.fromEntries(new FormData(form)));
-    }, { once: true });
+    onModalDone(ok => resolve(ok ? Object.fromEntries(new FormData(form)) : null));
   });
 }
 
@@ -914,14 +1190,14 @@ function browse({ title, exts = "", dirMode = false, multi = false, path = "", l
     };
     $("#br-list").ondblclick = e => {
       const li = e.target.closest("li[data-f]");
-      if (li && !multi) { chosen = new Set([li.dataset.f]); dlg.close("ok"); }
+      if (li && !multi) { chosen = new Set([li.dataset.f]); $("#modal-ok").click(); }
     };
-    dlg.addEventListener("close", () => {
-      if (dlg.returnValue !== "ok" || !cur) return resolve(null);
+    onModalDone(ok => {
+      if (!ok || !cur) return resolve(null);
       if (dirMode) return resolve(cur.path);
       if (!chosen.size) return resolve(null);
       resolve(multi ? [...chosen].map(f => join(cur.path, f)) : join(cur.path, [...chosen][0]));
-    }, { once: true });
+    });
     dlg.showModal();
     go(path);
   });

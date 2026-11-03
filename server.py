@@ -14,6 +14,7 @@ from flask import Flask, jsonify, request, send_file, send_from_directory, redir
 import beamstop
 import image_io
 import native_dialogs
+import results
 from anis_finder import anisotropy_map, chi_profile, pixel_chi_map, pixel_q_map
 from integration_methods import (UNITS, UserError, build_mask, cake, calibration_info, integrate_1d,
                                  load_poni, q_to_radius_px, set_calibration, unit_factor)
@@ -599,9 +600,168 @@ def post_chi_profile():
         prof, metrics = chi_profile(ai, img, state.mask_for(img), state.q_range(),
                                     nbins=num(b.get("nbins", 180), "chi bins", int),
                                     solid_angle=bool(b.get("solid_angle")), polarization=pol)
-        return jsonify(chi=prof["chi"].tolist(),
-                       intensity=[None if not np.isfinite(v) else float(v) for v in prof["intensity"]],
-                       metrics=metrics)
+        return jsonify(chi=prof["chi"].tolist(), intensity=_json_floats(prof["intensity"]),
+                       fit=_json_floats(prof["fit"]), metrics=metrics)
+
+
+def _json_floats(a):
+    return [None if not np.isfinite(v) else float(v) for v in a]
+
+
+# ----------------------------------------------------------------------------- saved analysis results
+
+def _image_meta(folder, image_id):
+    """Position of an image in the folder listing and its acquisition (file) time."""
+    from datetime import datetime
+    ids = [c["id"] for f in image_io.list_images(folder) for c in (f.get("children") or [f])]
+    fname = image_id.partition(image_io.FRAME_SEP)[0]
+    mtime = (Path(folder) / fname).stat().st_mtime
+    return {"index": ids.index(image_id) + 1 if image_id in ids else None,
+            "time": datetime.fromtimestamp(mtime).isoformat(timespec="seconds")}
+
+
+@app.post("/api/anisotropy/analyze")
+def analyze_anisotropy():
+    """Compute I(chi) for one image over the current q range, save the profile (.dat) and
+    put its fit parameters into analysis/anisotropy_results.csv."""
+    b = body()
+    image_id = b.get("id")
+    with state.lock:
+        ai = state.require_ai()
+        folder = state.require_folder()
+        q_min, q_max = state.q_range()
+        if q_min is None or q_max is None:
+            raise UserError("Set q min and q max first.")
+        img = state.image(image_id)
+        pol = num(b.get("polarization"), "Polarization factor", allow_none=True)
+        sa = bool(b.get("solid_angle"))
+        prof, m = chi_profile(ai, img, state.mask_for(img), (q_min, q_max),
+                              nbins=num(b.get("nbins", 180), "chi bins", int), solid_angle=sa, polarization=pol)
+        bs_on = state.beamstop_for(img.shape) is not None
+        tag = f"q{q_min:.4g}-{q_max:.4g}A"
+        name = f"{image_io.curve_name(image_id)}_chi_{tag}.dat"
+        results.write_profile(
+            results.analysis_dir(folder, "anisotropy") / name,
+            {"chi_deg": prof["chi"], "intensity": prof["intensity"], "fit": prof["fit"]},
+            {"image": image_id, "q_range_A^-1": f"{q_min:.6g} - {q_max:.6g}",
+             "fit": "I(chi) = I0 [1 + A cos 2(chi - phi)]",
+             "A": f"{m['amplitude']:.6g}" if m["amplitude"] is not None else "nan",
+             "phi_deg": f"{m['orientation_deg']:.4f}", "I0": f"{m['i0']:.6g}",
+             "solid_angle_correction": sa, "polarization_factor": pol,
+             "poni": state.settings.get("poni"), "mask": state.settings.get("mask") or "none",
+             "auto_beamstop_mask": bs_on})
+        row = {"id": f"{image_id}|{tag}", "image": image_id, **_image_meta(folder, image_id),
+               "q_min_A": q_min, "q_max_A": q_max,
+               **{k: m[k] for k in ("amplitude", "orientation_deg", "i0", "max_over_min", "coverage", "pixels")},
+               "solid_angle": sa, "polarization": pol, "beamstop_masked": bs_on,
+               "profile": f"anisotropy/{name}"}
+        results.TABLES["anisotropy"].upsert(folder, row)
+        return jsonify(row=row, chi=prof["chi"].tolist(), intensity=_json_floats(prof["intensity"]),
+                       fit=_json_floats(prof["fit"]), metrics=m)
+
+
+def _table(kind):
+    if kind not in results.TABLES:
+        raise UserError(f"Unknown result table: {kind}")
+    return results.TABLES[kind]
+
+
+@app.get("/api/results")
+def get_results():
+    """All result tables of the open folder (columns + rows)."""
+    with state.lock:
+        folder = state.settings.get("folder")
+        out = []
+        for t in results.TABLES.values():
+            rows = t.load(folder) if folder and Path(folder).is_dir() else []
+            out.append({**t.describe(), "rows": rows, "file": str(t.path(folder)) if folder else None})
+        return jsonify(tables=out)
+
+
+@app.post("/api/results/delete")
+def delete_results():
+    b = body()
+    with state.lock:
+        rows = _table(b.get("kind")).delete(state.require_folder(), b.get("ids") or [])
+        return jsonify(count=len(rows))
+
+
+@app.post("/api/results/profiles")
+def result_profiles():
+    """The saved 1D profiles (e.g. I(chi)) of some result rows, for overlay plots."""
+    b = body()
+    with state.lock:
+        folder = Path(state.require_folder())
+        rows = {r["id"]: r for r in _table(b.get("kind")).load(folder)}
+        out = []
+        for rid in b.get("ids") or []:
+            r = rows.get(rid)
+            if not r or not r.get("profile"):
+                continue
+            p = folder / results.ANALYSIS_DIR / r["profile"]
+            if not p.is_file():
+                continue
+            df = results.read_profile(p)
+            out.append({"id": rid, "label": f"{r['image']}", "columns": list(df.columns),
+                        "data": {c: _json_floats(df[c].to_numpy(float)) for c in df.columns}})
+        return jsonify(profiles=out)
+
+
+@app.post("/api/save_figure")
+def save_figure():
+    """Store a figure exported by the browser (PNG data URL and/or SVG text)."""
+    import base64
+    import re
+    b = body()
+    name = re.sub(r'[\\/:*?"<>|]+', "_", (b.get("name") or "").strip()) or "figure"
+    with state.lock:
+        out_dir = results.analysis_dir(state.require_folder(), "figures")
+        paths = []
+        if b.get("png", "").startswith("data:image/png;base64,"):
+            p = out_dir / f"{name}.png"
+            p.write_bytes(base64.b64decode(b["png"].split(",", 1)[1]))
+            paths.append(str(p))
+        if b.get("svg"):
+            svg = b["svg"]
+            if svg.startswith("data:image/svg+xml,"):
+                from urllib.parse import unquote
+                svg = unquote(svg.split(",", 1)[1])
+            p = out_dir / f"{name}.svg"
+            p.write_text(svg, encoding="utf-8")
+            paths.append(str(p))
+        if not paths:
+            raise UserError("Nothing to save.")
+        return jsonify(paths=paths)
+
+
+@app.post("/api/anisotropy/save_map")
+def save_anisotropy_map():
+    """Save the anisotropy map (float32 TIFF, NaN = no data) of an image."""
+    b = body()
+    image_id, mode = b.get("id"), b.get("mode", "divide")
+    with state.lock:
+        ai = state.require_ai()
+        img = state.image(image_id)
+        pol = num(b.get("polarization"), "Polarization factor", allow_none=True)
+        amap, _ = anisotropy_map(ai, img, state.mask_for(img), mode=mode, bins=state.settings["bins"],
+                                 q_range=state.q_range(), solid_angle=bool(b.get("solid_angle")), polarization=pol)
+        path = results.analysis_dir(state.require_folder(), "anisotropy") / f"{image_io.curve_name(image_id)}_map_{mode}.tif"
+        save_tif(path, amap)
+        return jsonify(path=str(path))
+
+
+@app.post("/api/open_folder")
+def open_folder_in_os():
+    """Show the analysis folder in Explorer / Finder / the file manager."""
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        raise UserError("Only possible on the computer running SAXSII.")
+    with state.lock:
+        p = results.analysis_dir(state.require_folder())
+    if sys.platform.startswith("win"):
+        os.startfile(p)
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(p)])
+    return jsonify(path=str(p))
 
 
 # ----------------------------------------------------------------------------- 1D integration / curves

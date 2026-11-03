@@ -128,5 +128,8 @@ def chi_profile(ai, image, mask, q_range, nbins=180, solid_angle=False, polariza
         "max_over_min": float(np.nanmax(prof) / np.nanmin(prof)) if np.nanmin(prof) > 0 else None,
         "coverage": float(ok.mean()),
         "pixels": int(sel.sum()),
+        "i0": float(a0),
     }
-    return {"chi": centers, "intensity": prof}, metrics
+    crad = np.deg2rad(centers)
+    fit = a0 + c * np.cos(2 * crad) + s * np.sin(2 * crad)
+    return {"chi": centers, "intensity": prof, "fit": fit}, metrics
