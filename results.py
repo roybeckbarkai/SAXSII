@@ -33,7 +33,11 @@ class ResultTable:
         p = self.path(folder)
         if not p.is_file():
             return []
-        df = pd.read_csv(p)
+        df = pd.read_csv(p, encoding="utf-8-sig")
+        # the file's header row holds readable titles; map them back to keys
+        # (files written before titles were added already use the keys)
+        to_key = {label: key for key, label, _ in self.columns}
+        df = df.rename(columns=lambda c: to_key.get(c, c))
         df = df.astype(object).where(pd.notna(df), None)
         return df.to_dict("records")
 
@@ -42,7 +46,9 @@ class ResultTable:
         df = pd.DataFrame(rows)
         # known columns first (in order), anything unknown (e.g. from a newer version) after
         cols = [k for k in self.keys if k in df.columns] + [k for k in df.columns if k not in self.keys]
-        df[cols].to_csv(self.path(folder), index=False)
+        titles = {key: label for key, label, _ in self.columns}
+        # readable titles as header; UTF-8 with BOM so Excel shows Å, φ, χ correctly
+        df[cols].rename(columns=titles).to_csv(self.path(folder), index=False, encoding="utf-8-sig")
 
     def upsert(self, folder, row):
         """Insert or replace (same 'id') a row and rewrite the CSV."""

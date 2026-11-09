@@ -25,9 +25,14 @@ def save_dat(filename, folder, curve, unit):
     return path
 
 
+CSV_TITLES = {"q_A^-1": "q (1/A)", "q_nm^-1": "q (1/nm)"}
+
+
 def save_csv(filename, folder, curve, unit):
     path = Path(folder) / f"{filename}_csv.csv"
-    curve_frame(curve, unit).to_csv(path, index=False, header=False)
+    df = curve_frame(curve, unit)
+    df.columns = [CSV_TITLES.get(unit, unit), "Intensity", "Error (sigma)"]
+    df.to_csv(path, index=False)
     return path
 
 
