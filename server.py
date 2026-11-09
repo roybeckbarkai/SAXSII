@@ -12,6 +12,7 @@ import numpy as np
 from flask import Flask, jsonify, request, send_file, send_from_directory, redirect
 
 import beamstop
+import grouping
 import image_io
 import native_dialogs
 import results
@@ -835,14 +836,68 @@ def average_curves():
     if len(names) < 2:
         raise UserError("Select at least 2 curves to average.")
     with state.lock:
-        curves = [state.curves[n] for n in names]
-        radial = curves[0]["radial"]
-        Is, Ss = zip(*(_on_grid(c, radial) for c in curves))
-        n = len(curves)
-        curve = {"radial": radial, "intensity": np.mean(Is, axis=0),
-                 "sigma": np.sqrt(np.sum(np.square(Ss), axis=0)) / n}  # error of the mean
-        name = _store_new_curve(b.get("name"), curve)
+        name = _store_new_curve(b.get("name"), _mean_curve([state.curves[n] for n in names]))
         return jsonify(name=name, curves=sorted(state.curves))
+
+
+def _mean_curve(curves):
+    """Average on the radial grid of the first curve; sigma = error of the mean."""
+    radial = curves[0]["radial"]
+    Is, Ss = zip(*(_on_grid(c, radial) for c in curves))
+    return {"radial": radial, "intensity": np.mean(Is, axis=0),
+            "sigma": np.sqrt(np.sum(np.square(Ss), axis=0)) / len(curves)}
+
+
+# ----------------------------------------------------------------------------- group & average by name
+
+@app.post("/api/group/preview")
+def group_preview():
+    """Which groups a name pattern produces (ids: images to consider; keep: field indices; regex)."""
+    b = body()
+    groups, unmatched = grouping.group_images(b.get("ids") or [], keep=b.get("keep") or [],
+                                              regex=(b.get("regex") or "").strip(),
+                                              include=(b.get("include") or "").strip())
+    seen = {}
+    for g in groups:  # make output names unique
+        n = seen.get(g["name"], 0)
+        seen[g["name"]] = n + 1
+        if n:
+            g["name"] = f"{g['name']}{grouping.SEP}{g['key']}"
+    return jsonify(groups=groups, unmatched=unmatched)
+
+
+@app.post("/api/group/average")
+def group_average():
+    """Average one group. mode 'curves': integrate members that are not yet integrated, store
+    the mean curve (+ .dat); mode 'images': mean image -> <folder>/averaged/<name>.tif."""
+    b = body()
+    members, name, mode = b.get("members") or [], (b.get("name") or "").strip(), b.get("mode", "curves")
+    if not members or not name:
+        raise UserError("Empty group.")
+    with state.lock:
+        folder = state.require_folder()
+        if mode == "images":
+            arrays = [state.image(i).astype(np.float64) for i in members]
+            if len({a.shape for a in arrays}) != 1:
+                raise UserError(f"{name}: images have different shapes.")
+            out = Path(folder) / "averaged"
+            out.mkdir(exist_ok=True)
+            path = save_tif(out / f"{name}.tif", np.mean(arrays, axis=0))
+            return jsonify(path=str(path), n=len(members))
+        ai = state.require_ai()
+        s = state.settings
+        curves = []
+        for i in members:
+            cname = image_io.curve_name(i)
+            if cname not in state.curves:
+                img = state.image(i)
+                state.curves[cname] = integrate_1d(ai, img, state.mask_for(img), s["bins"], state.q_range(),
+                                                   s["sigma_thres"])
+                save_dat(cname, folder, state.curves[cname], s["unit"])
+            curves.append(state.curves[cname])
+        state.curves[name] = _mean_curve(curves)
+        save_dat(name, folder, state.curves[name], s["unit"])
+        return jsonify(name=name, n=len(members), curves=sorted(state.curves))
 
 
 @app.post("/api/curves/remove")

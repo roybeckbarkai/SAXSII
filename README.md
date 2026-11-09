@@ -15,6 +15,9 @@ The server listens on `127.0.0.1` only. Folder, PONI, mask and integration setti
 
 1. **Images** – open a folder (`.tif/.tiff/.edf/.cbf`, HDF5/NeXus stacks are listed frame by frame).
    *Track folder* polls for new files; *Show newest* displays each new image as it arrives.
+   *Group & average by name…* averages images whose names share chosen parts: click e.g. `p08` in
+   `hirsch_00405_…_p08_f00` to average all frames of each position (or `f00` for each frame over all
+   positions), or give a regular expression. Output: averaged 1D curves or averaged TIFFs in `averaged/`.
    *Load NXS file…* converts a NeXus file into per-frame TIFFs + mask + PONI (folder next to the `.nxs`,
    via `NXS2TIF_conversion/nxs_to_tiff.py`) and loads them.
 2. **Calibration** – load a `.poni` file (from `pyFAI-calib2`) and optionally a `.msk` mask.
@@ -49,6 +52,7 @@ The server listens on `127.0.0.1` only. Folder, PONI, mask and integration setti
 | `integration_methods.py` | pyFAI integration, caking, masks, geometry |
 | `anis_finder.py` | isotropic reference, anisotropy maps, χ profile |
 | `beamstop.py` | automatic beamstop / arm detection |
+| `grouping.py` | grouping images by parts of their names (for averaging) |
 | `results.py` | saved analysis tables (`analysis/<kind>_results.csv`) – register new analyses here |
 | `native_dialogs.py` | system file / folder dialogs |
 | `image_io.py` | folder listing, image/HDF5 reading, PNG rendering |

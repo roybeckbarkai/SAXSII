@@ -39,6 +39,7 @@
         <button id="img-average">Average selected</button>
         <button id="img-subtract">Subtract selected</button>
       </div>
+      <button id="group-avg" title="Average images whose names share chosen parts, e.g. all frames f00…f09 of each position p08">Group &amp; average by name…</button>
     </section>
 
     <section>
@@ -175,7 +176,8 @@
         <button id="anis-run-all" title="Analyse every image in the folder">Run on all</button>
         <button class="save-fig" data-target="chi-plot" title="Save this plot as PNG + SVG">Save plot</button>
       </div>
-      <div id="chi-plot"></div>
+      <div class="plot-box"><div id="chi-plot"></div>
+        <p id="chi-msg" class="muted hidden">Set q min and q max (e.g. around a peak) to get I(χ), its anisotropy amplitude and orientation.</p></div>
     </div>
     <div id="results-wrap" class="hidden">
       <div class="res-head"><span id="res-info" class="muted small"></span></div>
@@ -235,8 +237,9 @@
     <h3 id="modal-title"></h3>
     <div id="modal-body"></div>
     <div class="row end">
+      <!-- OK comes first so Enter in a text field confirms; CSS order keeps it on the right -->
+      <button value="ok" id="modal-ok" class="primary" style="order: 2">OK</button>
       <button value="cancel" formnovalidate>Cancel</button>
-      <button value="ok" id="modal-ok" class="primary">OK</button>
     </div>
   </form>
 </dialog>

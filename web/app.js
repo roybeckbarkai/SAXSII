@@ -543,7 +543,7 @@ function draw2D(r) {
     : `color range ${fmt(r.vmin)} – ${fmt(r.vmax)} (${r.scale})`;
   layout.title = { text: `<span style="font-size:12px">${esc(r.id)} · ${range}</span>`, x: 0.01, xanchor: "left", y: 0.99 };
   layout.margin.t = 30;
-  Plotly.react($("#plot"), traces, layout, PLOT_CONFIG);
+  drawPlot($("#plot"), traces, layout, PLOT_CONFIG);
   bindPlotEvents();
 }
 
@@ -604,7 +604,7 @@ async function plotCurves() {
       uirevision: "curves", hovermode: "closest", dragmode: "zoom", shapes, annotations,
     });
     layout.margin.t = 40;
-    Plotly.react($("#plot"), traces, layout, PLOT_CONFIG);
+    drawPlot($("#plot"), traces, layout, PLOT_CONFIG);
     bindPlotEvents();
   });
 }
@@ -711,6 +711,115 @@ $("#img-average").onclick = async () => {
     setFiles(r.files); toast(`Saved ${r.path}`, "info");
   });
 };
+// ----------------------------------------------------------------------------- group & average by name
+
+/** Same naming as the server's image_io.curve_name: stem, or <h5 stem>_f0003 for frames. */
+function curveStem(id) {
+  const [file, frame] = id.split("#");
+  const stem = file.replace(/\.[^.]+$/, "");
+  return frame === undefined ? stem : `${stem}_f${String(frame).padStart(4, "0")}`;
+}
+
+$("#group-avg").onclick = async () => {
+  const all = leafIds();
+  if (all.length < 2) return toast("Open a folder with images first.");
+  const selected = all.filter(id => S.sel.has(id));
+  const example = selected[0] || S.current || all[0];
+  const toks = curveStem(example).split("_");
+  const keep = new Set();
+  let previewGroups = [], timer, seq = 0;
+
+  const html = `
+    <p class="muted small">Images whose names agree in the parts you <b>highlight</b> are averaged together;
+      the other parts may differ. E.g. highlight <code>p08</code> to average all frames of each position.</p>
+    <div class="radio-row">
+      <label><input type="radio" name="scope" value="sel" ${selected.length >= 2 ? "checked" : "disabled"}> Selected images (${selected.length})</label>
+      <label><input type="radio" name="scope" value="all" ${selected.length >= 2 ? "" : "checked"}> All images in the folder (${all.length})</label>
+    </div>
+    <div class="field">Name parts of <span class="muted">${esc(example)}</span> – click the ones that define a group
+      <div class="name-chips">${toks.map((t, i) => `${i ? '<span class="sep">_</span>' : ""}<button type="button" class="chip" data-i="${i}">${esc(t)}</button>`).join("")}</div>
+    </div>
+    <label class="field">…or a regular expression (files with equal capture groups are averaged together)
+      <input name="regex" placeholder="e.g. _(p\d+)_  – overrides the highlighted parts" spellcheck="false"></label>
+    <label class="field">Only use names matching (optional regular expression)
+      <input name="include" placeholder="e.g. hirsch_00405" spellcheck="false"></label>
+    <div class="radio-row">Output:
+      <label><input type="radio" name="mode" value="curves" checked> Averaged 1D curves (integrates as needed)</label>
+      <label><input type="radio" name="mode" value="images"> Averaged 2D images (TIFF in averaged/)</label>
+    </div>
+    <div id="group-summary" class="small"></div>
+    <div class="group-preview" id="group-preview"></div>`;
+
+  const scopeIds = form => (form.scope.value === "sel" ? selected : all);
+  const refresh = form => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const my = ++seq;
+      try {
+        const r = await api("/api/group/preview", { ids: scopeIds(form), keep: [...keep], regex: form.regex.value, include: form.include.value });
+        if (my !== seq) return;
+        previewGroups = r.groups;
+        const sizes = r.groups.map(g => g.members.length);
+        $("#group-summary").innerHTML = `<b>${r.groups.length}</b> group(s) → ${r.groups.length} averaged output(s)` +
+          (r.unmatched.length ? ` · <span style="color:var(--danger)">${r.unmatched.length} image(s) don't match and are skipped</span>` : "") +
+          (sizes.some(n => n === 1) ? ` · <span style="color:var(--danger)">${sizes.filter(n => n === 1).length} group(s) contain only one image</span>` : "");
+        $("#group-preview").innerHTML = r.groups.slice(0, 200).map(g =>
+          `<div title="${esc(g.members.join("\n"))}"><span>${esc(g.name)}</span><span class="n">${g.members.length} image(s)</span></div>`).join("")
+          || `<div class="muted">No groups.</div>`;
+      } catch (e) {
+        if (my !== seq) return;
+        previewGroups = [];
+        $("#group-summary").innerHTML = `<span style="color:var(--danger)">${esc(e.message)}</span>`;
+        $("#group-preview").innerHTML = "";
+      }
+    }, 200);
+  };
+
+  $("#modal").classList.add("wide");
+  const v = await dialog("Group & average by name", html, form => {
+    form.querySelectorAll(".chip").forEach(chip => (chip.onclick = () => {
+      const i = +chip.dataset.i;
+      keep.has(i) ? keep.delete(i) : keep.add(i);
+      chip.classList.toggle("keep", keep.has(i));
+      refresh(form);
+    }));
+    for (const el of [form.regex, form.include]) el.oninput = () => refresh(form);
+    form.querySelectorAll("input[type=radio][name=scope]").forEach(r => (r.onchange = () => refresh(form)));
+    refresh(form);
+  });
+  $("#modal").classList.remove("wide");
+  if (!v) return;
+  const groups = previewGroups;
+  if (!groups.length) return toast("No groups to average.");
+  const mode = v.mode;
+  const prog = $("#progress");
+  prog.hidden = false; prog.max = groups.length; prog.value = 0;
+  const made = [];
+  try {
+    for (const g of groups) {
+      status(`Averaging ${g.name} (${made.length + 1}/${groups.length}, ${g.members.length} images)…`, true);
+      try {
+        const r = await api("/api/group/average", { members: g.members, name: g.name, mode });
+        made.push(r.name || g.name);
+      } catch (e) {
+        toast(`${g.name}: ${e.message}`);
+        if (/PONI|folder/.test(e.message)) break;
+      }
+      prog.value = made.length;
+    }
+  } finally {
+    prog.hidden = true;
+    status("");
+  }
+  if (!made.length) return;
+  if (mode === "images") return toast(`Saved ${made.length} averaged image(s) in the “averaged” subfolder`, "info");
+  await refreshState();
+  S.curveSel = new Set(made);
+  renderCurveList(S.st.curves);
+  toast(`Made ${made.length} averaged curve(s) (.dat files saved in the image folder)`, "info");
+  switchTab("curves");
+};
+
 $("#img-subtract").onclick = async () => {
   const sel = [...S.sel];
   if (sel.length !== 2) return toast("Select exactly two images (sample and background).");
@@ -733,7 +842,7 @@ async function chiProfile() {
   const plot = $("#chi-plot");
   if (s.q_min == null || s.q_max == null) {
     Plotly.purge(plot);
-    plot.innerHTML = `<p class="muted" style="padding:10px">Set q min and q max (e.g. around a peak) to get I(χ), its anisotropy amplitude and orientation.</p>`;
+    $("#chi-msg").classList.remove("hidden");
     $("#chi-metrics").textContent = "";
     return;
   }
@@ -741,7 +850,7 @@ async function chiProfile() {
   const m = r.metrics;
   $("#chi-metrics").innerHTML = `<span title="Fit I(χ) = I₀[1 + A cos 2(χ − φ)]">A = <b>${fmt(m.amplitude, 3)}</b> · φ = <b>${fmt(m.orientation_deg, 1)}°</b></span>
     · max/min ${fmt(m.max_over_min, 2)} · ${(100 * m.coverage).toFixed(0)}% χ coverage`;
-  plot.innerHTML = "";
+  $("#chi-msg").classList.add("hidden");
   const f = unitFactor();
   const layout = Object.assign(baseLayout(), {
     margin: { l: 60, r: 20, t: 6, b: 36 },
@@ -753,7 +862,7 @@ async function chiProfile() {
   });
   layout.showlegend = true;
   layout.legend = { orientation: "h", x: 1, xanchor: "right", y: 1, yanchor: "bottom", font: { size: 11 } };
-  Plotly.react(plot, [
+  drawPlot(plot, [
     { type: "scatter", mode: "lines+markers", x: r.chi, y: r.intensity, marker: { size: 3 }, line: { width: 1.2, color: PALETTE[0] },
       name: `I(χ), q ${fmt(s.q_min * f)}–${fmt(s.q_max * f)}` },
     { type: "scatter", mode: "lines", x: r.chi, y: r.fit, line: { width: 1.5, color: "#d62728", dash: "dash" }, name: "fit I₀[1 + A cos 2(χ − φ)]" },
@@ -940,7 +1049,7 @@ async function plotResults(t) {
     layout.yaxis = { title: { text: "Intensity" }, gridcolor: cssVar("--border"), zeroline: false };
     layout.showlegend = true;
   }
-  Plotly.react($("#plot"), traces, layout, PLOT_CONFIG);
+  drawPlot($("#plot"), traces, layout, PLOT_CONFIG);
   bindPlotEvents();
 }
 
@@ -1084,6 +1193,24 @@ function onPlotHover(ev) {
     } catch { /* ignore */ }
   }, 60);
 }
+
+/** Make a plot fill its box. Plotly measures the box only when a plot is first created
+ *  (later redraws keep the old size) and its "responsive" option only reacts to window
+ *  resizes, so after tab switches a plot could keep the size of a smaller / larger panel. */
+function fitPlot(el) {
+  const fl = el._fullLayout;
+  if (!el.data || !fl || !el.offsetWidth || !el.offsetHeight) return;
+  if (Math.abs(fl.width - el.offsetWidth) > 1 || Math.abs(fl.height - el.offsetHeight) > 1) Plotly.Plots.resize(el);
+}
+
+/** Plotly.react + fit to the box. */
+function drawPlot(el, data, layout, config) {
+  return Plotly.react(el, data, layout, config).then(() => fitPlot(el));
+}
+
+// re-fit whenever a plot's box changes size (panels shown / hidden, window resized)
+const plotResizer = new ResizeObserver(entries => entries.forEach(e => fitPlot(e.target)));
+["#plot", "#chi-plot"].forEach(sel => plotResizer.observe($(sel)));
 
 function bindPlotEvents() {
   const el = $("#plot");
