@@ -174,6 +174,11 @@
         <button id="anis-save" class="primary" title="Save I(χ) and the fit of this image to analysis/ and the results table">Save to results</button>
         <button id="anis-run-sel" title="Analyse every selected image with the current q range and corrections">Run on selected</button>
         <button id="anis-run-all" title="Analyse every image in the folder">Run on all</button>
+        <span class="spacer"></span>
+        <label class="inline" title="Axis the Hermans f is measured from: the fitted direction of maximum intensity φ, or a fixed χ angle (e.g. the stretching / flow direction)">f axis
+          <select id="f-ref"><option value="max">max of I(χ)</option><option value="fixed">fixed χ…</option></select>
+          <input id="f-ref-angle" type="number" step="any" class="tiny hidden" placeholder="°"></label>
+        <label class="inline" title="Subtract the minimum of I(χ) (isotropic background) before computing f and S"><input type="checkbox" id="f-baseline"> f: subtract baseline</label>
         <button class="save-fig" data-target="chi-plot" title="Save this plot as PNG + SVG">Save plot</button>
       </div>
       <div class="plot-box"><div id="chi-plot"></div>

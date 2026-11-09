@@ -36,6 +36,12 @@ The server listens on `127.0.0.1` only. Folder, PONI, mask and integration setti
    `I / I_iso − 1` (relative) or `I − I_iso` (absolute), signed and shown on a diverging colormap.
    With a q range set, the panel below shows I(χ) and the fit `I(χ) = I₀[1 + A cos 2(χ − φ)]`:
    **A** is the anisotropy amplitude (0 = isotropic) and **φ** the orientation (pyFAI χ convention).
+   Also reported: the **Hermans orientation factor** f = (3⟨cos²β⟩ − 1)/2 with ⟨⟩ weighted by I(χ)·|sin β|
+   (β = χ − axis; assumes symmetry about the axis, which lies in the detector plane; 0 isotropic,
+   1 along the axis, −½ across) and the **2D order parameter** S = 2⟨cos²β⟩ − 1 (unweighted). The axis is
+   the fitted φ or a fixed χ (e.g. the stretching direction); the isotropic baseline (min of I(χ)) can be
+   subtracted first. Empty χ bins are filled from χ + 180° (centrosymmetry) or neighbouring bins.
+   See Rooks et al., *J. Appl. Cryst.* 56 (2023) 683 for a comparison of anisotropy-factor definitions.
    *Save to results* / *Run on selected* / *Run on all* store each I(χ) + fit in `analysis/anisotropy/`
    and A, φ, … in `analysis/anisotropy_results.csv`; *Save map* writes the map as a float32 TIFF.
 7. **Results** – every saved analysis of the folder (reloaded when you reopen it): a sortable table,

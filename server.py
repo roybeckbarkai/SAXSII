@@ -591,6 +591,12 @@ def rings():
         return jsonify(rings=out)
 
 
+def _f_options(b):
+    """Hermans-f options from a request: reference axis (None = fitted phi) and baseline."""
+    ref = None if b.get("f_reference") in (None, "", "max") else num(b.get("f_reference"), "Reference angle")
+    return {"f_reference_deg": ref, "f_subtract_baseline": bool(b.get("f_baseline"))}
+
+
 @app.post("/api/chi_profile")
 def post_chi_profile():
     b = body()
@@ -600,7 +606,7 @@ def post_chi_profile():
         pol = num(b.get("polarization"), "Polarization factor", allow_none=True)
         prof, metrics = chi_profile(ai, img, state.mask_for(img), state.q_range(),
                                     nbins=num(b.get("nbins", 180), "chi bins", int),
-                                    solid_angle=bool(b.get("solid_angle")), polarization=pol)
+                                    solid_angle=bool(b.get("solid_angle")), polarization=pol, **_f_options(b))
         return jsonify(chi=prof["chi"].tolist(), intensity=_json_floats(prof["intensity"]),
                        fit=_json_floats(prof["fit"]), metrics=metrics)
 
@@ -637,7 +643,8 @@ def analyze_anisotropy():
         pol = num(b.get("polarization"), "Polarization factor", allow_none=True)
         sa = bool(b.get("solid_angle"))
         prof, m = chi_profile(ai, img, state.mask_for(img), (q_min, q_max),
-                              nbins=num(b.get("nbins", 180), "chi bins", int), solid_angle=sa, polarization=pol)
+                              nbins=num(b.get("nbins", 180), "chi bins", int), solid_angle=sa, polarization=pol,
+                              **_f_options(b))
         bs_on = state.beamstop_for(img.shape) is not None
         tag = f"q{q_min:.4g}-{q_max:.4g}A"
         name = f"{image_io.curve_name(image_id)}_chi_{tag}.dat"
@@ -648,12 +655,19 @@ def analyze_anisotropy():
              "fit": "I(chi) = I0 [1 + A cos 2(chi - phi)]",
              "A": f"{m['amplitude']:.6g}" if m["amplitude"] is not None else "nan",
              "phi_deg": f"{m['orientation_deg']:.4f}", "I0": f"{m['i0']:.6g}",
+             "hermans_f": "nan" if m["hermans_f"] is None else f"{m['hermans_f']:.6g}",
+             "order_parameter_2d": "nan" if m["order_2d"] is None else f"{m['order_2d']:.6g}",
+             "f_reference_deg": f"{m['f_reference_deg']:.4f}",
+             "f_definition": "f = (3<cos^2 b> - 1)/2, <cos^2 b> weighted by I|sin b|; S2D = 2<cos^2 b> - 1 (unweighted); "
+                             "b = chi - reference; empty chi bins filled from chi+180 / neighbours",
+             "f_baseline_subtracted": m["f_baseline_subtracted"],
              "solid_angle_correction": sa, "polarization_factor": pol,
              "poni": state.settings.get("poni"), "mask": state.settings.get("mask") or "none",
              "auto_beamstop_mask": bs_on})
         row = {"id": f"{image_id}|{tag}", "image": image_id, **_image_meta(folder, image_id),
                "q_min_A": q_min, "q_max_A": q_max,
-               **{k: m[k] for k in ("amplitude", "orientation_deg", "i0", "max_over_min", "coverage", "pixels")},
+               **{k: m[k] for k in ("amplitude", "orientation_deg", "hermans_f", "order_2d", "f_reference_deg",
+                                    "f_baseline_subtracted", "i0", "max_over_min", "coverage", "pixels")},
                "solid_angle": sa, "polarization": pol, "beamstop_masked": bs_on,
                "profile": f"anisotropy/{name}"}
         results.TABLES["anisotropy"].upsert(folder, row)

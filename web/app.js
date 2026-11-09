@@ -837,6 +837,12 @@ $("#img-subtract").onclick = async () => {
 
 // ----------------------------------------------------------------------------- anisotropy chi profile
 
+/** Vertical lines at an axis angle and its 180° partner, inside [-180, 180]. */
+function axisLines(deg, color, dash) {
+  const a = ((deg + 180) % 360 + 360) % 360 - 180, b = a > 0 ? a - 180 : a + 180;
+  return [a, b].map(x => ({ type: "line", x0: x, x1: x, yref: "paper", y0: 0, y1: 1, line: { color, dash, width: 1 } }));
+}
+
 async function chiProfile() {
   const s = S.st.settings;
   const plot = $("#chi-plot");
@@ -846,9 +852,11 @@ async function chiProfile() {
     $("#chi-metrics").textContent = "";
     return;
   }
-  const r = await api("/api/chi_profile", { id: S.current, solid_angle: $("#anis-sa").checked, polarization: $("#anis-pol").value });
+  const r = await api("/api/chi_profile", { id: S.current, ...anisParams() });
   const m = r.metrics;
   $("#chi-metrics").innerHTML = `<span title="Fit I(χ) = I₀[1 + A cos 2(χ − φ)]">A = <b>${fmt(m.amplitude, 3)}</b> · φ = <b>${fmt(m.orientation_deg, 1)}°</b></span>
+    · <span title="Hermans orientation factor f = (3⟨cos²β⟩ − 1)/2, β = χ − ${fmt(m.f_reference_deg, 1)}°, ⟨⟩ weighted by I·|sin β| (0 isotropic, 1 along the axis, −½ across)${m.f_baseline_subtracted ? ", baseline subtracted" : ""}">f = <b>${fmt(m.hermans_f, 3)}</b></span>
+    · <span title="2D order parameter S = 2⟨cos²β⟩ − 1 (unweighted)">S = <b>${fmt(m.order_2d, 3)}</b></span>
     · max/min ${fmt(m.max_over_min, 2)} · ${(100 * m.coverage).toFixed(0)}% χ coverage`;
   $("#chi-msg").classList.add("hidden");
   const f = unitFactor();
@@ -857,8 +865,8 @@ async function chiProfile() {
     xaxis: { title: { text: "χ (°)" }, range: [-180, 180], dtick: 45, gridcolor: cssVar("--border"), zeroline: false },
     yaxis: { title: { text: "I" }, gridcolor: cssVar("--border"), zeroline: false },
     showlegend: false,
-    shapes: [{ type: "line", x0: m.orientation_deg, x1: m.orientation_deg, yref: "paper", y0: 0, y1: 1, line: { color: "#d62728", dash: "dot", width: 1 } },
-      { type: "line", x0: m.orientation_deg - 180 * Math.sign(m.orientation_deg || 1), x1: m.orientation_deg - 180 * Math.sign(m.orientation_deg || 1), yref: "paper", y0: 0, y1: 1, line: { color: "#d62728", dash: "dot", width: 1 } }],
+    shapes: [...axisLines(m.orientation_deg, "#d62728", "dot"),
+      ...(Math.abs(m.f_reference_deg - m.orientation_deg) > 0.01 ? axisLines(m.f_reference_deg, "#2ca02c", "dash") : [])],
   });
   layout.showlegend = true;
   layout.legend = { orientation: "h", x: 1, xanchor: "right", y: 1, yanchor: "bottom", font: { size: 11 } };
@@ -872,8 +880,17 @@ async function chiProfile() {
 // ----------------------------------------------------------------------------- saving anisotropy results
 
 function anisParams() {
-  return { solid_angle: $("#anis-sa").checked, polarization: $("#anis-pol").value };
+  const fixed = $("#f-ref").value === "fixed";
+  return { solid_angle: $("#anis-sa").checked, polarization: $("#anis-pol").value,
+    f_reference: fixed ? $("#f-ref-angle").value : "max", f_baseline: $("#f-baseline").checked };
 }
+$("#f-ref").onchange = () => {
+  const fixed = $("#f-ref").value === "fixed";
+  $("#f-ref-angle").classList.toggle("hidden", !fixed);
+  if (fixed) $("#f-ref-angle").focus();
+  if (!fixed || $("#f-ref-angle").value !== "") showView();
+};
+$("#f-ref-angle").onchange = $("#f-baseline").onchange = () => showView();
 
 /** Analyse images one by one (progress bar), saving profiles + result rows on the server. */
 async function analyzeAnisotropy(ids) {
