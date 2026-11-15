@@ -330,6 +330,10 @@ def convert_file(nxs_path, out_root, gap_value=0, overwrite=False, progress=None
             frame_dtype = np.float32
         else:
             frame_dtype = np.int32 if (gap_value < 0 or ds.dtype.kind == "i") else np.uint32
+        # Values the output type cannot hold (e.g. uint32 counts > 2^31 when writing int32, or a
+        # 64-bit stack) would wrap around silently in astype(); they are masked instead.
+        out_info = None if frame_dtype == np.float32 else np.iinfo(frame_dtype)
+        n_out_of_range = 0
         n_pos = scan_shape[0] if len(scan_shape) > 1 else 1
         for p in range(n_pos):
             block = ds[p] if len(scan_shape) > 1 else ds[()]
@@ -337,9 +341,14 @@ def convert_file(nxs_path, out_root, gap_value=0, overwrite=False, progress=None
 
             for f, frame in enumerate(block):
                 gaps = _invalid_pixels(frame)
+                if out_info is not None:
+                    unfit = ~gaps & ((frame > out_info.max) | (frame < out_info.min))
+                    if unfit.any():
+                        n_out_of_range += int(unfit.sum())
+                        gaps |= unfit
                 mask |= gaps
 
-                out = frame.astype(frame_dtype)
+                out = np.where(gaps, 0, frame).astype(frame_dtype)  # no wrap-around: unfit values are gaps
                 out[gaps] = gap_value
                 if len(scan_shape) > 1:
                     name = f"{stem}_p{p:02d}_f{f:02d}.tif"
@@ -367,6 +376,9 @@ def convert_file(nxs_path, out_root, gap_value=0, overwrite=False, progress=None
         meta["frame_files"] = frame_names
         meta["mask_file"] = paths["mask"].name
         meta["n_masked_pixels"] = int(mask.sum())
+        meta["n_values_out_of_range"] = n_out_of_range
+        if n_out_of_range:
+            print(f"  !! {n_out_of_range} pixel values did not fit {np.dtype(frame_dtype).name}; masked")
         with open(paths["meta"], "w") as fh:
             json.dump(meta, fh, indent=2, default=str)
 
