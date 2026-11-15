@@ -30,7 +30,10 @@ The server listens on `127.0.0.1` only. Folder, PONI, mask and integration setti
 3. **Integration** – choose bins, unit and an optional q range (type it or *Pick q min/max* on the image,
    cake or curve). Each integrated image is saved next to it as `<name>.dat`.
 4. **1D curves** – overlay, background-subtract (`sample − f·background`, errors in quadrature),
-   average (error of the mean), export CSV, reload `.dat` files, add q markers.
+   average (error of the mean), export CSV, reload `.dat` files.
+   **Markers**: *Add marker* on the image, anisotropy map, cake or 1D curves (click where it goes, name
+   it); every marker shows in all of those views (ring on detector images, line on cake / curves) in its
+   own color. Click a marker in the Markers list to rename or move it, ✕ to remove. Saved in `settings.json`.
 5. **Cake** – I(q, χ) map.
 6. **Anisotropy** – deviation of the image from its own azimuthal average I<sub>iso</sub>(q):
    `I / I_iso − 1` (relative) or `I − I_iso` (absolute), signed and shown on a diverging colormap.

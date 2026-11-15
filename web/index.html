@@ -124,9 +124,9 @@
         <input id="lo-pct" type="number" step="any" value="1" class="tiny"> –
         <input id="hi-pct" type="number" step="any" value="99.9" class="tiny"></label>
       <label class="for-image"><input type="checkbox" id="show-mask" checked> Mask</label>
-      <label class="for-image"><input type="checkbox" id="show-rings" checked> Rings</label>
+      <label class="for-overlay" title="Show q markers, the q range and the beam center on the plot"><input type="checkbox" id="show-rings" checked> Markers</label>
       <button class="for-image" data-pick="center">Set center</button>
-      <button class="for-image for-curves" data-pick="marker">Add marker</button>
+      <button class="for-overlay" data-pick="marker" title="Click on the plot to place a named q marker (shown in every view)">Add marker</button>
       <span class="for-anis anis-opts">
         <label>Map <select id="anis-mode">
           <option value="divide">I / I<sub>iso</sub> − 1</option>

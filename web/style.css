@@ -133,6 +133,7 @@ progress { width: 100%; accent-color: var(--accent); }
 .list li.current { font-weight: 600; }
 .list li.child { padding-left: 22px; }
 .list li .x { margin-left: auto; color: var(--muted); padding: 0 4px; }
+.list li .name { overflow: hidden; text-overflow: ellipsis; }
 .list li .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
 .list .empty { color: var(--muted); cursor: default; }
 .list .empty:hover { background: none; }

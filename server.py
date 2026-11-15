@@ -56,7 +56,8 @@ class State:
         self.ai = None
         self.user_mask = None
         self.curves = {}  # name -> {radial (A^-1), intensity, sigma}
-        self.markers = {}  # name -> q (A^-1)
+        self.markers = {}  # name -> q (A^-1); saved in settings.json
+        self.settings["markers"] = self.markers
         self._maps = {}  # (kind, shape) -> cached per-pixel q / chi arrays
         self.beamstop_mask = None  # detected on settings["beamstop"]["ref"], used for every image
         self.beamstop_stats = None
@@ -70,6 +71,8 @@ class State:
         except Exception:
             log.exception("could not read settings")
         self.settings["beamstop"] = {**DEFAULT_SETTINGS["beamstop"], **(self.settings.get("beamstop") or {})}
+        self.markers = {str(k): float(v) for k, v in (self.settings.get("markers") or {}).items()}
+        self.settings["markers"] = self.markers
         self.settings["recent"] = {k: list(v) for k, v in
                                    {**DEFAULT_SETTINGS["recent"], **(self.settings.get("recent") or {})}.items()}
         for key, loader in (("poni", self.set_poni), ("mask", self.set_mask)):
@@ -190,6 +193,7 @@ class State:
 
 state = State()
 app = Flask(__name__, static_folder=None)
+app.json.sort_keys = False  # keep insertion order (e.g. markers: order = color)
 
 
 @app.errorhandler(UserError)
@@ -1004,18 +1008,35 @@ def subtract_images():
 
 @app.post("/api/markers")
 def post_markers():
+    """Add {name, q}, edit {rename: old, name, q} (keeps its position), {remove: name} or {clear}.
+    q is given in the current display unit and stored in A^-1."""
     b = body()
     with state.lock:
+        markers = state.markers
         if b.get("clear"):
-            state.markers.clear()
+            markers.clear()
         elif b.get("remove"):
-            state.markers.pop(b["remove"], None)
+            markers.pop(b["remove"], None)
         else:
             name = (b.get("name") or "").strip()
             if not name:
                 raise UserError("Enter a marker name.")
-            state.markers[name] = num(b.get("q"), "q") / unit_factor(state.settings["unit"])
-        return jsonify(markers=state.markers)
+            q = num(b.get("q"), "q") / unit_factor(state.settings["unit"])
+            if q <= 0:
+                raise UserError("q must be positive.")
+            old = b.get("rename")
+            if old is not None and old not in markers:
+                raise UserError(f"No marker named {old}.")
+            if name in markers and name != old:
+                raise UserError(f"A marker named {name} already exists.")
+            if old is None:
+                markers[name] = q
+            else:  # rebuild to keep the marker's place in the order (= its color)
+                items = [(name, q) if k == old else (k, v) for k, v in markers.items()]
+                markers.clear()
+                markers.update(items)
+        state.save_settings()
+        return jsonify(markers=markers)
 
 
 def create_app():

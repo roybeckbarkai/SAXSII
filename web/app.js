@@ -424,7 +424,8 @@ for (const id of ["qmin", "qmax"]) {
 $("#qrange-clear").onclick = () => run("Saving", async () => { await postSettings({ q_min: null, q_max: null }); await rangeChanged(); });
 
 async function rangeChanged() {
-  if (S.tab === "image") await drawRings();
+  // the image only needs its rings redrawn; maps, cake and I(chi) depend on the q range
+  if (S.tab === "image") await refreshOverlays();
   else showView();
 }
 
@@ -447,6 +448,7 @@ function switchTab(tab) {
   $("#toolbar-results").classList.toggle("hidden", tab !== "results");
   $("#results-wrap").classList.toggle("hidden", tab !== "results");
   $$(".for-image").forEach(el => el.classList.toggle("hidden", tab !== "image"));
+  $$(".for-overlay").forEach(el => el.classList.toggle("hidden", !["image", "anis", "cake"].includes(tab)));
   $$(".for-anis").forEach(el => el.classList.toggle("hidden", tab !== "anis"));
   $("#chi-wrap").classList.toggle("hidden", tab !== "anis");
   if (tab === "anis") {
@@ -495,10 +497,17 @@ async function render2D() {
   await run(label, async () => {
     const r = await api("/api/render", req);
     if (seq !== S.renderSeq) return;  // a newer request superseded this one
-    if (req.view === "raw") S.rings = (await api("/api/rings")).rings;
+    if (req.view !== "cake") S.rings = (await api("/api/rings")).rings;
     draw2D(r);
     if (S.tab === "anis") await chiProfile();
   });
+}
+
+// bright colors that stay visible on the colormaps; a marker keeps its color in every view
+const MARKER_COLORS = ["#ffeb3b", "#00e5ff", "#ff4081", "#76ff03", "#ff9100", "#e040fb", "#18ffff", "#ffd180"];
+function markerColor(name) {
+  const i = Object.keys(S.st?.markers || {}).indexOf(name);
+  return MARKER_COLORS[(i < 0 ? 0 : i) % MARKER_COLORS.length];
 }
 
 function overlayShapes() {
@@ -512,7 +521,7 @@ function overlayShapes() {
   const annotations = [];
   for (const ring of S.rings) {
     if (!isFinite(ring.r)) continue;
-    const color = ring.kind === "range" ? "#ffffff" : "#ffeb3b";
+    const color = ring.kind === "range" ? "#ffffff" : markerColor(ring.label);
     shapes.push({ type: "circle", x0: c.center_x - ring.r, x1: c.center_x + ring.r, y0: c.center_y - ring.r, y1: c.center_y + ring.r,
       line: { color, width: 1.5, dash: ring.kind === "range" ? "dash" : "solid" } });
     annotations.push({ x: c.center_x + ring.r * 0.7071, y: c.center_y + ring.r * 0.7071, text: esc(ring.label), showarrow: false,
@@ -537,7 +546,7 @@ function draw2D(r) {
     dragmode: "pan",
     hovermode: "closest",
   });
-  if (r.view === "raw") Object.assign(layout, overlayShapes());
+  Object.assign(layout, isCake ? cakeShapes() : overlayShapes());
   const range = r.view === "subtract" || r.view === "divide"
     ? `color range ±${fmt(r.vmax)} · ${(100 * r.valid_fraction).toFixed(0)}% of pixels valid`
     : `color range ${fmt(r.vmin)} – ${fmt(r.vmax)} (${r.scale})`;
@@ -547,10 +556,29 @@ function draw2D(r) {
   bindPlotEvents();
 }
 
-async function drawRings() {
-  if (S.tab !== "image" || !S.render) return;
+/** Redraw markers / q range / center on the current plot without recomputing it. */
+async function refreshOverlays() {
+  if (S.tab === "curves") return plotCurves();
+  if (!S.render || S.tab === "results") return;
+  if (S.render.view === "cake") return Plotly.relayout($("#plot"), cakeShapes());
   S.rings = (await api("/api/rings")).rings;
-  Plotly.relayout($("#plot"), overlayShapes());
+  return Plotly.relayout($("#plot"), overlayShapes());
+}
+
+/** q markers and q range as vertical lines on the cake (x = q). */
+function cakeShapes() {
+  if (!S.st || !$("#show-rings").checked) return { shapes: [], annotations: [] };
+  const f = unitFactor(), shapes = [], annotations = [];
+  for (const key of ["q_min", "q_max"]) {
+    const q = S.st.settings[key];
+    if (q != null) shapes.push({ type: "line", xref: "x", yref: "paper", x0: q * f, x1: q * f, y0: 0, y1: 1, line: { color: "#ffffff", width: 1.5, dash: "dash" } });
+  }
+  for (const [name, q] of Object.entries(S.st.markers)) {
+    const color = markerColor(name);
+    shapes.push({ type: "line", xref: "x", yref: "paper", x0: q * f, x1: q * f, y0: 0, y1: 1, line: { color, width: 1.5 } });
+    annotations.push({ x: q * f, y: 1, xref: "x", yref: "paper", text: esc(name), showarrow: false, yanchor: "bottom", font: { color, size: 11 } });
+  }
+  return { shapes, annotations };
 }
 
 // ----------------------------------------------------------------------------- 1D curves
@@ -590,8 +618,9 @@ async function plotCurves() {
     const f = unitFactor();
     const shapes = [], annotations = [];
     for (const [name, q] of Object.entries(S.st.markers)) {
-      shapes.push({ type: "line", xref: "x", yref: "paper", x0: q * f, x1: q * f, y0: 0, y1: 1, line: { color: "#f9a825", width: 1, dash: "dot" } });
-      annotations.push({ x: q * f, y: 1, xref: "x", yref: "paper", text: esc(name), showarrow: false, yanchor: "bottom", font: { size: 11 } });
+      const color = markerColor(name);
+      shapes.push({ type: "line", xref: "x", yref: "paper", x0: q * f, x1: q * f, y0: 0, y1: 1, line: { color, width: 1.5, dash: "dot" } });
+      annotations.push({ x: q * f, y: 1, xref: "x", yref: "paper", text: esc(name), showarrow: false, yanchor: "bottom", font: { size: 11, color } });
     }
     for (const [key, label] of [["q_min", "q min"], ["q_max", "q max"]]) {
       const q = S.st.settings[key];
@@ -1162,7 +1191,7 @@ async function onPlotClick(ev) {
     if (S.tab !== "image") return;
     await run("Setting center", async () => {
       applyState(await api("/api/calibration", { center_x: pt.x, center_y: pt.y }));
-      await drawRings();
+      await refreshOverlays();
     });
   } else if (mode === "qmin" || mode === "qmax") {
     await run("Setting q range", async () => {
@@ -1173,9 +1202,7 @@ async function onPlotClick(ev) {
   } else if (mode === "marker") {
     const q = await run("Reading q", () => qAtClick(pt));
     if (q == null) return;
-    const v = await dialog("Add marker", `<p class="muted">at ${fmt(q)} ${esc(unitLabel())}</p><label class="field">Name<input name="name" required></label>`);
-    if (!v) return;
-    await run("Adding marker", async () => { await api("/api/markers", { name: v.name, q }); await refreshState(); await rangeChanged(); });
+    await editMarker(null, +q.toPrecision(5));
   }
 }
 
@@ -1242,20 +1269,53 @@ function renderMarkers(markers) {
   const f = unitFactor();
   const entries = Object.entries(markers);
   $("#marker-list").innerHTML = entries.length
-    ? entries.map(([n, q]) => `<li data-name="${esc(n)}">${esc(n)} <span class="muted">${fmt(q * f)}</span><span class="x" title="Remove">✕</span></li>`).join("")
-    : `<li class="empty">No markers</li>`;
+    ? entries.map(([n, q]) => `<li data-name="${esc(n)}" title="Click to rename or move">
+        <span class="swatch" style="background:${markerColor(n)}"></span><span class="name">${esc(n)}</span>
+        <span class="muted">${fmt(q * f)}</span><span class="x" title="Remove">✕</span></li>`).join("")
+    : `<li class="empty">No markers – use “Add marker” on a plot or type one below</li>`;
 }
+
+async function markersChanged() {
+  await refreshState();
+  await refreshOverlays();
+}
+
+/** Add (name = null) or edit a marker in a dialog; q in the display unit. */
+async function editMarker(name, q) {
+  const f = unitFactor(), markers = S.st.markers;
+  let n = Object.keys(markers).length + 1;
+  while (markers[`M${n}`] !== undefined) n++;
+  const v = await dialog(name === null ? "Add marker" : "Edit marker", `
+    <label class="field">Name<input name="name" value="${esc(name ?? `M${n}`)}" required></label>
+    <label class="field">q (${esc(unitLabel())})<input name="q" type="number" step="any" min="0" value="${name === null ? q : +(markers[name] * f).toPrecision(6)}" required></label>
+    <p class="muted small">Shown as a ring on the image and anisotropy maps and as a line on the cake and 1D curves.</p>`,
+    form => setTimeout(() => form.name.select()));
+  if (!v) return;
+  await run(name === null ? "Adding marker" : "Updating marker", async () => {
+    await api("/api/markers", name === null ? { name: v.name, q: v.q } : { rename: name, name: v.name, q: v.q });
+    await markersChanged();
+  });
+}
+
 $("#marker-list").addEventListener("click", e => {
   const li = e.target.closest("li[data-name]");
-  if (!li || !e.target.classList.contains("x")) return;
-  run("Removing marker", async () => { await api("/api/markers", { remove: li.dataset.name }); await refreshState(); await rangeChanged(); });
+  if (!li) return;
+  if (e.target.classList.contains("x")) {
+    run("Removing marker", async () => { await api("/api/markers", { remove: li.dataset.name }); await markersChanged(); });
+  } else {
+    editMarker(li.dataset.name);
+  }
 });
 $("#marker-add").onclick = () => run("Adding marker", async () => {
   await api("/api/markers", { name: $("#marker-name").value, q: $("#marker-q").value });
   $("#marker-name").value = $("#marker-q").value = "";
-  await refreshState(); await rangeChanged();
+  await markersChanged();
 });
-$("#marker-clear").onclick = () => run("Clearing markers", async () => { await api("/api/markers", { clear: true }); await refreshState(); await rangeChanged(); });
+$("#marker-clear").onclick = () => run("Clearing markers", async () => {
+  if (!Object.keys(S.st.markers).length || !confirm("Remove all markers?")) return;
+  await api("/api/markers", { clear: true });
+  await markersChanged();
+});
 
 // ----------------------------------------------------------------------------- dialogs & file browser
 
