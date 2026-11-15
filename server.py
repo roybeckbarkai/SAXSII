@@ -656,9 +656,8 @@ def analyze_anisotropy():
              "A": f"{m['amplitude']:.6g}" if m["amplitude"] is not None else "nan",
              "phi_deg": f"{m['orientation_deg']:.4f}", "I0": f"{m['i0']:.6g}",
              "hermans_f": "nan" if m["hermans_f"] is None else f"{m['hermans_f']:.6g}",
-             "order_parameter_2d": "nan" if m["order_2d"] is None else f"{m['order_2d']:.6g}",
              "f_reference_deg": f"{m['f_reference_deg']:.4f}",
-             "f_definition": "f = (3<cos^2 b> - 1)/2, <cos^2 b> weighted by I|sin b|; S2D = 2<cos^2 b> - 1 (unweighted); "
+             "f_definition": "f = (3<cos^2 b> - 1)/2, <cos^2 b> weighted by I|sin b|; "
                              "b = chi - reference; empty chi bins filled from chi+180 / neighbours",
              "f_baseline_subtracted": m["f_baseline_subtracted"],
              "solid_angle_correction": sa, "polarization_factor": pol,
@@ -666,7 +665,7 @@ def analyze_anisotropy():
              "auto_beamstop_mask": bs_on})
         row = {"id": f"{image_id}|{tag}", "image": image_id, **_image_meta(folder, image_id),
                "q_min_A": q_min, "q_max_A": q_max,
-               **{k: m[k] for k in ("amplitude", "orientation_deg", "hermans_f", "order_2d", "f_reference_deg",
+               **{k: m[k] for k in ("amplitude", "orientation_deg", "hermans_f", "f_reference_deg",
                                     "f_baseline_subtracted", "i0", "max_over_min", "coverage", "pixels")},
                "solid_angle": sa, "polarization": pol, "beamstop_masked": bs_on,
                "profile": f"anisotropy/{name}"}

@@ -102,7 +102,6 @@ TABLES = {
         ("amplitude", "Anisotropy A", True),
         ("orientation_deg", "Orientation φ (°)", True),
         ("hermans_f", "Hermans f", True),
-        ("order_2d", "2D order parameter S", True),
         ("f_reference_deg", "f reference axis (°)", True),
         ("f_baseline_subtracted", "f baseline subtracted", False),
         ("i0", "Mean intensity I₀", True),

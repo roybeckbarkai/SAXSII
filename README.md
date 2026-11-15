@@ -38,8 +38,7 @@ The server listens on `127.0.0.1` only. Folder, PONI, mask and integration setti
    **A** is the anisotropy amplitude (0 = isotropic) and **φ** the orientation (pyFAI χ convention).
    Also reported: the **Hermans orientation factor** f = (3⟨cos²β⟩ − 1)/2 with ⟨⟩ weighted by I(χ)·|sin β|
    (β = χ − axis; assumes symmetry about the axis, which lies in the detector plane; 0 isotropic,
-   1 along the axis, −½ across) and the **2D order parameter** S = 2⟨cos²β⟩ − 1 (unweighted). The axis is
-   the fitted φ or a fixed χ (e.g. the stretching direction); the isotropic baseline (min of I(χ)) can be
+   1 along the axis, −½ across). The axis is the fitted φ or a fixed χ (e.g. the stretching direction); the isotropic baseline (min of I(χ)) can be
    subtracted first. Empty χ bins are filled from χ + 180° (centrosymmetry) or neighbouring bins.
    See Rooks et al., *J. Appl. Cryst.* 56 (2023) 683 for a comparison of anisotropy-factor definitions.
    *Save to results* / *Run on selected* / *Run on all* store each I(χ) + fit in `analysis/anisotropy/`

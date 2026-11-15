@@ -100,15 +100,13 @@ def fill_chi_gaps(chi_deg, prof):
 
 
 def orientation_factors(chi_deg, prof, reference_deg, subtract_baseline=False):
-    """Orientation descriptors of I(chi) about the axis at `reference_deg`
+    """Hermans orientation factor of I(chi) about the axis at `reference_deg`
     (beta = chi - reference):
 
       hermans_f  f = (3 <cos^2 beta> - 1) / 2 with <cos^2 beta> = sum I |sin b| cos^2 b / sum I |sin b|
-                 (Hermans orientation factor; the |sin beta| weight treats beta as a polar angle,
-                 i.e. assumes symmetry about the reference axis lying in the detector plane).
+                 (the |sin beta| weight treats beta as a polar angle, i.e. assumes symmetry about
+                 the reference axis lying in the detector plane).
                  0 = isotropic, 1 = all intensity along the axis, -1/2 = perpendicular to it.
-      order_2d   S = 2 <cos^2 beta> - 1 = <cos 2 beta> with a plain (unweighted) average: the
-                 in-plane order parameter, no 3D assumption. 0 = isotropic, +-1 = along / across.
 
     With subtract_baseline the minimum of I(chi) (isotropic background) is removed first.
     Empty bins are filled with fill_chi_gaps so they do not bias the averages."""
@@ -116,14 +114,12 @@ def orientation_factors(chi_deg, prof, reference_deg, subtract_baseline=False):
     if subtract_baseline:
         I = I - I.min()
     if not np.isfinite(I).all() or I.sum() <= 0:
-        return {"hermans_f": None, "order_2d": None}
+        return {"hermans_f": None}
     beta = np.deg2rad(chi_deg - reference_deg)
     cos2 = np.cos(beta) ** 2
     w = I * np.abs(np.sin(beta))
     cos2_3d = (w * cos2).sum() / w.sum() if w.sum() > 0 else np.nan
-    cos2_2d = (I * cos2).sum() / I.sum()
-    return {"hermans_f": float((3 * cos2_3d - 1) / 2) if np.isfinite(cos2_3d) else None,
-            "order_2d": float(2 * cos2_2d - 1)}
+    return {"hermans_f": float((3 * cos2_3d - 1) / 2) if np.isfinite(cos2_3d) else None}
 
 
 def chi_profile(ai, image, mask, q_range, nbins=180, solid_angle=False, polarization=None,
@@ -133,7 +129,7 @@ def chi_profile(ai, image, mask, q_range, nbins=180, solid_angle=False, polariza
     Also returns anisotropy descriptors from fitting I(chi) = I0 [1 + A cos 2(chi - phi)]:
       * amplitude: A (0 = isotropic); robust to noise and to missing azimuthal sectors.
       * orientation_deg: phi, the chi of maximum intensity (pyFAI chi convention).
-    and the Hermans orientation factor / 2D order parameter (see orientation_factors) about
+    and the Hermans orientation factor (see orientation_factors) about
     f_reference_deg (None = the fitted phi).
     """
     rng = q_range_arg(q_range)

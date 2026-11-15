@@ -856,7 +856,6 @@ async function chiProfile() {
   const m = r.metrics;
   $("#chi-metrics").innerHTML = `<span title="Fit I(χ) = I₀[1 + A cos 2(χ − φ)]">A = <b>${fmt(m.amplitude, 3)}</b> · φ = <b>${fmt(m.orientation_deg, 1)}°</b></span>
     · <span title="Hermans orientation factor f = (3⟨cos²β⟩ − 1)/2, β = χ − ${fmt(m.f_reference_deg, 1)}°, ⟨⟩ weighted by I·|sin β| (0 isotropic, 1 along the axis, −½ across)${m.f_baseline_subtracted ? ", baseline subtracted" : ""}">f = <b>${fmt(m.hermans_f, 3)}</b></span>
-    · <span title="2D order parameter S = 2⟨cos²β⟩ − 1 (unweighted)">S = <b>${fmt(m.order_2d, 3)}</b></span>
     · max/min ${fmt(m.max_over_min, 2)} · ${(100 * m.coverage).toFixed(0)}% χ coverage`;
   $("#chi-msg").classList.add("hidden");
   const f = unitFactor();
