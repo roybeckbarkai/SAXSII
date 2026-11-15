@@ -55,6 +55,7 @@ main {
   flex: 1; min-height: 0;
   display: grid;
   grid-template-columns: 300px 1fr 290px;
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .panel { background: var(--panel); overflow-y: auto; padding: 4px 10px 12px; }
@@ -90,6 +91,34 @@ button:disabled { opacity: .5; cursor: default; }
 section > button { width: 100%; }
 progress { width: 100%; accent-color: var(--accent); }
 
+.picker { position: relative; display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center;
+  margin: 6px 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+.picker-text { min-width: 0; display: flex; flex-direction: column; }
+.picker-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+.picker-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.picker-name.empty { font-weight: 400; font-style: italic; color: var(--muted); }
+.picker-path { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.picker-more { padding: 4px 6px; }
+.picker-menu { position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 5; padding: 6px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 6px 20px rgb(0 0 0 / .25);
+  max-height: 320px; overflow-y: auto; }
+.picker-menu input { width: 100%; margin-bottom: 4px; }
+.picker-menu h4 { margin: 6px 4px 2px; font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; }
+.picker-item { display: flex; flex-direction: column; align-items: flex-start; width: 100%; border: 0; border-radius: 4px;
+  background: none; text-align: left; padding: 4px 6px; }
+.picker-item:hover, .picker-item:focus-visible { background: var(--sel); }
+.picker-item span { font-size: 11px; color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-item.danger { color: var(--danger); }
+
+.bs-box { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin: 8px 0; }
+.bs-head { font-weight: 600; display: flex; gap: 6px; align-items: center; }
+.bs-swatch { display: inline-block; width: 9px; height: 9px; background: #00e5e5; border-radius: 2px; }
+.slider { display: flex; flex-direction: column; margin: 6px 0 2px; font-size: 12px; color: var(--muted); }
+.slider span { display: flex; gap: 4px; }
+.slider output { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.slider input[type=range] { width: 100%; accent-color: var(--accent); padding: 0; border: 0; background: none; }
+#bs-info.warn { color: var(--danger); }
+
 .list {
   list-style: none; margin: 6px 0; padding: 0;
   border: 1px solid var(--border); border-radius: 5px;
@@ -104,6 +133,7 @@ progress { width: 100%; accent-color: var(--accent); }
 .list li.current { font-weight: 600; }
 .list li.child { padding-left: 22px; }
 .list li .x { margin-left: auto; color: var(--muted); padding: 0 4px; }
+.list li .name { overflow: hidden; text-overflow: ellipsis; }
 .list li .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
 .list .empty { color: var(--muted); cursor: default; }
 .list .empty:hover { background: none; }
@@ -121,16 +151,45 @@ progress { width: 100%; accent-color: var(--accent); }
 #plot { position: absolute; inset: 0; }
 .placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted); pointer-events: none; }
 .placeholder img { max-width: 40%; max-height: 50%; opacity: .85; border-radius: 8px; }
-#chi-wrap { height: 230px; border-top: 1px solid var(--border); display: flex; flex-direction: column; }
+#chi-wrap { flex: none; height: clamp(220px, 34vh, 340px); border-top: 1px solid var(--border); display: flex; flex-direction: column; }
 .chi-head { display: flex; gap: 10px; padding: 4px 10px; align-items: baseline; flex-wrap: wrap; }
+.chi-actions { display: flex; gap: 6px; padding: 0 10px 4px; flex-wrap: wrap; align-items: center; }
+.chi-actions label.inline { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; color: var(--muted); }
+.chi-actions .spacer { flex: 1; }
+.toolbar label, .toolbar button, .chi-actions label, .chi-actions button { white-space: nowrap; }
+#results-wrap { flex: none; height: clamp(160px, 36vh, 420px); border-top: 1px solid var(--border); display: flex; flex-direction: column; }
+.res-head { padding: 4px 10px; }
+.table-scroll { flex: 1; overflow: auto; }
+#res-table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#res-table th, #res-table td { padding: 3px 10px; border-bottom: 1px solid var(--border); text-align: right; }
+#res-table th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 600; cursor: pointer; }
+#res-table th:first-child, #res-table td:first-child { text-align: left; }
+#res-table tbody tr { cursor: pointer; }
+#res-table tbody tr:hover { background: color-mix(in srgb, var(--sel) 50%, transparent); }
+#res-table tbody tr.selected { background: var(--sel); }
 #chi-metrics { margin-left: auto; font-variant-numeric: tabular-nums; }
-#chi-plot { flex: 1; min-height: 0; }
+/* Plots fill a box whose size is set by the layout, never by the plot (Plotly falls back to a
+   450 px height when drawn into an unsized container, which pushed other panels out of view). */
+.plot-box { flex: 1; position: relative; min-height: 0; }
+#chi-plot { position: absolute; inset: 0; }
+#chi-msg { position: absolute; inset: 0; margin: 0; padding: 10px; }
+.tabs, .toolbar, .chi-head, .chi-actions, .res-head, .readout { flex: none; }
 .readout { padding: 4px 10px; border-top: 1px solid var(--border); background: var(--panel); font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; overflow: hidden; }
 .readout b { color: var(--text); font-weight: 600; }
 
 dialog { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text); min-width: 420px; max-width: 90vw; }
 dialog::backdrop { background: rgb(0 0 0 / .35); }
 dialog h3 { margin: 0 0 10px; font-size: 15px; }
+dialog.wide { width: min(760px, 94vw); }
+.name-chips { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; margin: 6px 0; font-family: Consolas, monospace; }
+.name-chips .sep { color: var(--muted); }
+.chip { border: 1px solid var(--border); border-radius: 5px; padding: 3px 7px; background: var(--bg); cursor: pointer; font: inherit; }
+.chip.keep { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.group-preview { max-height: 220px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; margin-top: 6px;
+  font-size: 12px; font-variant-numeric: tabular-nums; }
+.group-preview div { display: flex; gap: 10px; justify-content: space-between; padding: 1px 0; }
+.group-preview .n { color: var(--muted); white-space: nowrap; }
+.radio-row { display: flex; gap: 14px; flex-wrap: wrap; margin: 4px 0; }
 .browser-path { font-family: Consolas, monospace; font-size: 12px; word-break: break-all; margin-bottom: 6px; }
 .browser .list { height: 340px; }
 .browser li.dir::before { content: "📁"; }
@@ -141,7 +200,7 @@ dialog h3 { margin: 0 0 10px; font-size: 15px; }
 .toast.info { background: var(--accent); color: var(--accent-text); }
 
 @media (max-width: 1100px) {
-  main { grid-template-columns: 1fr; grid-auto-rows: auto; overflow-y: auto; }
+  main { grid-template-columns: 1fr; grid-template-rows: none; grid-auto-rows: auto; overflow-y: auto; }
   .center { height: 80vh; }
   .left, .right { border: 0; }
 }

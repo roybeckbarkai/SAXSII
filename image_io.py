@@ -176,9 +176,12 @@ def render_png(arr, cmap="jet", scale="log", lo_pct=1.0, hi_pct=99.9, vmin=None,
     return to_data_url(rgba), vmin, vmax
 
 
-def render_mask_png(mask, color=(255, 0, 255), alpha=110):
+def render_mask_png(mask, color=(255, 0, 255), alpha=110, beamstop=None, beamstop_color=(0, 255, 255)):
+    """Mask overlay; the auto-detected beamstop (if any) is drawn in its own color on top."""
     rgba = np.zeros(mask.shape + (4,), dtype=np.uint8)
     rgba[mask] = (*color, alpha)
+    if beamstop is not None and beamstop.shape == mask.shape:
+        rgba[beamstop] = (*beamstop_color, 140)
     return to_data_url(rgba)
 
 

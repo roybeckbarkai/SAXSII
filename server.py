@@ -11,7 +11,11 @@ from pathlib import Path
 import numpy as np
 from flask import Flask, jsonify, request, send_file, send_from_directory, redirect
 
+import beamstop
+import grouping
 import image_io
+import native_dialogs
+import results
 from anis_finder import anisotropy_map, chi_profile, pixel_chi_map, pixel_q_map
 from integration_methods import (UNITS, UserError, build_mask, cake, calibration_info, integrate_1d,
                                  load_poni, q_to_radius_px, set_calibration, unit_factor)
@@ -36,7 +40,11 @@ DEFAULT_SETTINGS = {
     "sigma_thres": 1000.0,
     "q_min": None,  # A^-1
     "q_max": None,  # A^-1
+    # automatic beamstop mask: detection parameters + the image it was detected on
+    "beamstop": {"enabled": False, **beamstop.DEFAULTS, "ref": None},
+    "recent": {"folder": [], "poni": [], "mask": [], "nxs": []},  # most recent first
 }
+RECENT_MAX = 8
 
 
 class State:
@@ -48,8 +56,11 @@ class State:
         self.ai = None
         self.user_mask = None
         self.curves = {}  # name -> {radial (A^-1), intensity, sigma}
-        self.markers = {}  # name -> q (A^-1)
+        self.markers = {}  # name -> q (A^-1); saved in settings.json
+        self.settings["markers"] = self.markers
         self._maps = {}  # (kind, shape) -> cached per-pixel q / chi arrays
+        self.beamstop_mask = None  # detected on settings["beamstop"]["ref"], used for every image
+        self.beamstop_stats = None
 
     # -- persistence
     def load_settings(self):
@@ -59,6 +70,11 @@ class State:
             return
         except Exception:
             log.exception("could not read settings")
+        self.settings["beamstop"] = {**DEFAULT_SETTINGS["beamstop"], **(self.settings.get("beamstop") or {})}
+        self.markers = {str(k): float(v) for k, v in (self.settings.get("markers") or {}).items()}
+        self.settings["markers"] = self.markers
+        self.settings["recent"] = {k: list(v) for k, v in
+                                   {**DEFAULT_SETTINGS["recent"], **(self.settings.get("recent") or {})}.items()}
         for key, loader in (("poni", self.set_poni), ("mask", self.set_mask)):
             if self.settings.get(key):
                 try:
@@ -66,6 +82,15 @@ class State:
                 except UserError as e:
                     log.warning("could not restore %s: %s", key, e)
                     self.settings[key] = ""
+
+    def remember(self, kind, path):
+        """Put a successfully loaded path at the top of its recent list."""
+        lst = self.settings["recent"].setdefault(kind, [])
+        path = str(path)
+        if path in lst:
+            lst.remove(path)
+        lst.insert(0, path)
+        del lst[RECENT_MAX:]
 
     def save_settings(self):
         try:
@@ -80,7 +105,13 @@ class State:
         else:
             self.ai = load_poni(path)
             self.settings["poni"] = str(path)
+            self.remember("poni", path)
+        self.geometry_changed()
+
+    def geometry_changed(self):
+        """Beam center / mask changed: cached maps and the beamstop detection are stale."""
         self._maps.clear()
+        self.beamstop_mask = self.beamstop_stats = None
 
     def set_mask(self, path):
         if not path:
@@ -88,6 +119,8 @@ class State:
         else:
             self.user_mask = image_io.read_mask(path)
             self.settings["mask"] = str(path)
+            self.remember("mask", path)
+        self.beamstop_mask = self.beamstop_stats = None
 
     def require_ai(self):
         if self.ai is None:
@@ -104,7 +137,35 @@ class State:
         return image_io.read_image(self.require_folder(), image_id)
 
     def mask_for(self, image):
-        return build_mask(self.ai, image, self.user_mask)
+        mask = build_mask(self.ai, image, self.user_mask)
+        bs = self.beamstop_for(image.shape)
+        if bs is not None:
+            mask |= bs
+        return mask
+
+    def beamstop_for(self, shape):
+        """The auto beamstop mask if enabled (re-detected lazily after geometry changes)."""
+        cfg = self.settings["beamstop"]
+        if not cfg["enabled"] or self.ai is None:
+            return None
+        if self.beamstop_mask is None and cfg.get("ref"):
+            try:
+                self.detect_beamstop(cfg["ref"])
+            except UserError as e:
+                log.warning("beamstop detection on %s failed: %s", cfg["ref"], e)
+                return None
+        m = self.beamstop_mask
+        return m if m is not None and m.shape == shape else None
+
+    def detect_beamstop(self, image_id):
+        ai = self.require_ai()
+        img = self.image(image_id)
+        cfg = self.settings["beamstop"]
+        cal = calibration_info(ai)
+        self.beamstop_mask, self.beamstop_stats = beamstop.detect_beamstop(
+            img, build_mask(ai, img, self.user_mask), (cal["center_x"], cal["center_y"]),
+            **{k: cfg[k] for k in beamstop.DEFAULTS})
+        self.beamstop_stats["ref"] = cfg["ref"] = image_id
 
     def pixel_map(self, kind, shape):
         key = (kind, shape)
@@ -126,11 +187,13 @@ class State:
             "curves": sorted(self.curves),
             "markers": self.markers,
             "mask_loaded": self.user_mask is not None,
+            "beamstop_stats": self.beamstop_stats,
         }
 
 
 state = State()
 app = Flask(__name__, static_folder=None)
+app.json.sort_keys = False  # keep insertion order (e.g. markers: order = color)
 
 
 @app.errorhandler(UserError)
@@ -241,12 +304,44 @@ def post_settings():
 
 @app.post("/api/folder")
 def open_folder():
-    path = (body().get("path") or "").strip()
+    path = (body().get("path") or "").strip().strip('"')
+    if not path:
+        raise UserError("Choose an image folder.")
     with state.lock:
         files = image_io.list_images(path)
-        state.settings["folder"] = str(Path(path))
+        folder = Path(path)
+        state.settings["folder"] = str(folder)
+        state.remember("folder", folder)
+        # Convenience: a single PONI / mask file in the folder is loaded if none is loaded yet.
+        auto = []
+        for key, pattern, loader in (("poni", "*.poni", state.set_poni), ("mask", "*.msk", state.set_mask)):
+            found = sorted(folder.glob(pattern))
+            if not state.settings.get(key) and len(found) == 1:
+                try:
+                    loader(str(found[0]))
+                    auto.append(found[0].name)
+                except UserError as e:
+                    log.warning("could not auto-load %s: %s", found[0], e)
         state.save_settings()
-        return jsonify(folder=state.settings["folder"], files=files)
+        return jsonify(folder=state.settings["folder"], files=files, auto_loaded=auto, state=state.public())
+
+
+@app.post("/api/pick")
+def pick():
+    """Open a native file / folder dialog on this computer (blocks until it is closed)."""
+    b = body()
+    kind = b.get("kind")
+    if kind not in native_dialogs.KINDS:
+        raise UserError(f"Unknown dialog: {kind}")
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        # The dialog would open on the server's screen, not the remote user's.
+        return jsonify(error="Native dialogs unavailable: browser is on another computer", native=False), 501
+    initial = b.get("initial") or state.settings.get("folder") or None
+    try:
+        out = native_dialogs.ask(kind, initial)  # not under state.lock: the user may take a while
+    except native_dialogs.DialogUnavailable as e:
+        return jsonify(error=f"Native dialogs unavailable: {e}", native=False), 501
+    return jsonify(path=out if isinstance(out, str) else None, paths=out if isinstance(out, list) else None)
 
 
 @app.get("/api/files")
@@ -316,6 +411,8 @@ def load_nxs():
                 log.exception("NXS conversion failed")
                 raise UserError(f"Could not convert {path.name}: {e}") from e
         state.settings["folder"] = str(paths["dir"])
+        state.remember("folder", paths["dir"])
+        state.remember("nxs", path)
         state.set_mask(str(paths["mask"]))
         warning = None
         if paths["poni"].exists():
@@ -324,6 +421,53 @@ def load_nxs():
             warning = f"{path.name} does not contain enough geometry to build a PONI file. Load a PONI file or use the calibration tool."
         state.save_settings()
         return jsonify({**state.public(), "files": image_io.list_images(paths["dir"]), "warning": warning})
+
+
+@app.post("/api/beamstop")
+def post_beamstop():
+    """Update the auto-beamstop parameters and (if enabled) re-detect on image `id`."""
+    b = body()
+    with state.lock:
+        cfg = state.settings["beamstop"]
+        if "enabled" in b:
+            cfg["enabled"] = bool(b["enabled"])
+        for key, cast, lo, hi in (("threshold", float, 0.01, 0.99), ("smooth", float, 0, 20),
+                                  ("margin", int, 0, 100), ("min_area", int, 0, 10 ** 6)):
+            if key in b:
+                cfg[key] = min(max(num(b[key], key, cast), lo), hi)
+        if "bridge_gaps" in b:
+            cfg["bridge_gaps"] = bool(b["bridge_gaps"])
+        state.beamstop_mask = state.beamstop_stats = None
+        if cfg["enabled"]:
+            ref = b.get("id") or cfg.get("ref")
+            if not ref:
+                raise UserError("Select an image to detect the beamstop on.")
+            state.detect_beamstop(ref)
+        state.save_settings()
+        return jsonify(state.public())
+
+
+@app.post("/api/beamstop/save")
+def save_beamstop():
+    """Write user mask + beamstop as a pyFAI-compatible .msk (EDF) file in the image folder."""
+    import fabio
+    name = (body().get("name") or "").strip()
+    if not name:
+        raise UserError("Enter a file name.")
+    if not name.lower().endswith((".msk", ".edf")):
+        name += ".msk"
+    with state.lock:
+        bs = state.beamstop_mask
+        if bs is None:
+            raise UserError("Detect the beamstop first.")
+        path = Path(state.require_folder()) / name
+        if path.exists():
+            raise UserError(f"{name} already exists.")
+        mask = bs.copy()
+        if state.user_mask is not None and state.user_mask.shape == bs.shape:
+            mask |= state.user_mask
+        fabio.edfimage.EdfImage(data=mask.astype(np.uint8)).write(str(path))
+        return jsonify(path=str(path))
 
 
 @app.post("/api/calibration")
@@ -336,7 +480,7 @@ def post_calibration():
                         center_x=num(b.get("center_x"), "Center X", allow_none=True),
                         center_y=num(b.get("center_y"), "Center Y", allow_none=True),
                         wavelength_A=num(b.get("wavelength_A"), "Wavelength", allow_none=True))
-        state._maps.clear()
+        state.geometry_changed()
         return jsonify(state.public())
 
 
@@ -371,9 +515,10 @@ def render():
         out = {"id": image_id, "view": view}
         if view == "raw":
             out.update(render_view(img, b))
-            mask = state.mask_for(img)
-            if mask.any():
-                out["mask_png"] = image_io.render_mask_png(mask)
+            mask = build_mask(state.ai, img, state.user_mask)
+            bs = state.beamstop_for(img.shape)
+            if mask.any() or bs is not None:
+                out["mask_png"] = image_io.render_mask_png(mask, beamstop=bs)
         elif view == "cake":
             ai = state.require_ai()
             res = cake(ai, img, state.mask_for(img), npt_rad=num(b.get("npt_rad", 500), "radial points", int),
@@ -415,6 +560,9 @@ def pixel():
             out["r"] = float(np.hypot(x + 0.5 - cal["center_x"], y + 0.5 - cal["center_y"]))
         if state.user_mask is not None and state.user_mask.shape == img.shape:
             out["masked"] = bool(state.user_mask[y, x])
+        bs = state.beamstop_for(img.shape)
+        if bs is not None and bs[y, x]:
+            out["masked"] = "beamstop"
         return jsonify(out)
 
 
@@ -447,6 +595,12 @@ def rings():
         return jsonify(rings=out)
 
 
+def _f_options(b):
+    """Hermans-f options from a request: reference axis (None = fitted phi) and baseline."""
+    ref = None if b.get("f_reference") in (None, "", "max") else num(b.get("f_reference"), "Reference angle")
+    return {"f_reference_deg": ref, "f_subtract_baseline": bool(b.get("f_baseline"))}
+
+
 @app.post("/api/chi_profile")
 def post_chi_profile():
     b = body()
@@ -456,10 +610,176 @@ def post_chi_profile():
         pol = num(b.get("polarization"), "Polarization factor", allow_none=True)
         prof, metrics = chi_profile(ai, img, state.mask_for(img), state.q_range(),
                                     nbins=num(b.get("nbins", 180), "chi bins", int),
-                                    solid_angle=bool(b.get("solid_angle")), polarization=pol)
-        return jsonify(chi=prof["chi"].tolist(),
-                       intensity=[None if not np.isfinite(v) else float(v) for v in prof["intensity"]],
-                       metrics=metrics)
+                                    solid_angle=bool(b.get("solid_angle")), polarization=pol, **_f_options(b))
+        return jsonify(chi=prof["chi"].tolist(), intensity=_json_floats(prof["intensity"]),
+                       fit=_json_floats(prof["fit"]), metrics=metrics)
+
+
+def _json_floats(a):
+    return [None if not np.isfinite(v) else float(v) for v in a]
+
+
+# ----------------------------------------------------------------------------- saved analysis results
+
+def _image_meta(folder, image_id):
+    """Position of an image in the folder listing and its acquisition (file) time."""
+    from datetime import datetime
+    ids = [c["id"] for f in image_io.list_images(folder) for c in (f.get("children") or [f])]
+    fname = image_id.partition(image_io.FRAME_SEP)[0]
+    mtime = (Path(folder) / fname).stat().st_mtime
+    return {"index": ids.index(image_id) + 1 if image_id in ids else None,
+            "time": datetime.fromtimestamp(mtime).isoformat(timespec="seconds")}
+
+
+@app.post("/api/anisotropy/analyze")
+def analyze_anisotropy():
+    """Compute I(chi) for one image over the current q range, save the profile (.dat) and
+    put its fit parameters into analysis/anisotropy_results.csv."""
+    b = body()
+    image_id = b.get("id")
+    with state.lock:
+        ai = state.require_ai()
+        folder = state.require_folder()
+        q_min, q_max = state.q_range()
+        if q_min is None or q_max is None:
+            raise UserError("Set q min and q max first.")
+        img = state.image(image_id)
+        pol = num(b.get("polarization"), "Polarization factor", allow_none=True)
+        sa = bool(b.get("solid_angle"))
+        prof, m = chi_profile(ai, img, state.mask_for(img), (q_min, q_max),
+                              nbins=num(b.get("nbins", 180), "chi bins", int), solid_angle=sa, polarization=pol,
+                              **_f_options(b))
+        bs_on = state.beamstop_for(img.shape) is not None
+        tag = f"q{q_min:.4g}-{q_max:.4g}A"
+        name = f"{image_io.curve_name(image_id)}_chi_{tag}.dat"
+        results.write_profile(
+            results.analysis_dir(folder, "anisotropy") / name,
+            {"chi_deg": prof["chi"], "intensity": prof["intensity"], "fit": prof["fit"]},
+            {"image": image_id, "q_range_A^-1": f"{q_min:.6g} - {q_max:.6g}",
+             "fit": "I(chi) = I0 [1 + A cos 2(chi - phi)]",
+             "A": f"{m['amplitude']:.6g}" if m["amplitude"] is not None else "nan",
+             "phi_deg": f"{m['orientation_deg']:.4f}", "I0": f"{m['i0']:.6g}",
+             "hermans_f": "nan" if m["hermans_f"] is None else f"{m['hermans_f']:.6g}",
+             "f_reference_deg": f"{m['f_reference_deg']:.4f}",
+             "f_definition": "f = (3<cos^2 b> - 1)/2, <cos^2 b> weighted by I|sin b|; "
+                             "b = chi - reference; empty chi bins filled from chi+180 / neighbours",
+             "f_baseline_subtracted": m["f_baseline_subtracted"],
+             "solid_angle_correction": sa, "polarization_factor": pol,
+             "poni": state.settings.get("poni"), "mask": state.settings.get("mask") or "none",
+             "auto_beamstop_mask": bs_on})
+        row = {"id": f"{image_id}|{tag}", "image": image_id, **_image_meta(folder, image_id),
+               "q_min_A": q_min, "q_max_A": q_max,
+               **{k: m[k] for k in ("amplitude", "orientation_deg", "hermans_f", "f_reference_deg",
+                                    "f_baseline_subtracted", "i0", "max_over_min", "coverage", "pixels")},
+               "solid_angle": sa, "polarization": pol, "beamstop_masked": bs_on,
+               "profile": f"anisotropy/{name}"}
+        results.TABLES["anisotropy"].upsert(folder, row)
+        return jsonify(row=row, chi=prof["chi"].tolist(), intensity=_json_floats(prof["intensity"]),
+                       fit=_json_floats(prof["fit"]), metrics=m)
+
+
+def _table(kind):
+    if kind not in results.TABLES:
+        raise UserError(f"Unknown result table: {kind}")
+    return results.TABLES[kind]
+
+
+@app.get("/api/results")
+def get_results():
+    """All result tables of the open folder (columns + rows)."""
+    with state.lock:
+        folder = state.settings.get("folder")
+        out = []
+        for t in results.TABLES.values():
+            rows = t.load(folder) if folder and Path(folder).is_dir() else []
+            out.append({**t.describe(), "rows": rows, "file": str(t.path(folder)) if folder else None})
+        return jsonify(tables=out)
+
+
+@app.post("/api/results/delete")
+def delete_results():
+    b = body()
+    with state.lock:
+        rows = _table(b.get("kind")).delete(state.require_folder(), b.get("ids") or [])
+        return jsonify(count=len(rows))
+
+
+@app.post("/api/results/profiles")
+def result_profiles():
+    """The saved 1D profiles (e.g. I(chi)) of some result rows, for overlay plots."""
+    b = body()
+    with state.lock:
+        folder = Path(state.require_folder())
+        rows = {r["id"]: r for r in _table(b.get("kind")).load(folder)}
+        out = []
+        for rid in b.get("ids") or []:
+            r = rows.get(rid)
+            if not r or not r.get("profile"):
+                continue
+            p = folder / results.ANALYSIS_DIR / r["profile"]
+            if not p.is_file():
+                continue
+            df = results.read_profile(p)
+            out.append({"id": rid, "label": f"{r['image']}", "columns": list(df.columns),
+                        "data": {c: _json_floats(df[c].to_numpy(float)) for c in df.columns}})
+        return jsonify(profiles=out)
+
+
+@app.post("/api/save_figure")
+def save_figure():
+    """Store a figure exported by the browser (PNG data URL and/or SVG text)."""
+    import base64
+    import re
+    b = body()
+    name = re.sub(r'[\\/:*?"<>|]+', "_", (b.get("name") or "").strip()) or "figure"
+    with state.lock:
+        out_dir = results.analysis_dir(state.require_folder(), "figures")
+        paths = []
+        if b.get("png", "").startswith("data:image/png;base64,"):
+            p = out_dir / f"{name}.png"
+            p.write_bytes(base64.b64decode(b["png"].split(",", 1)[1]))
+            paths.append(str(p))
+        if b.get("svg"):
+            svg = b["svg"]
+            if svg.startswith("data:image/svg+xml,"):
+                from urllib.parse import unquote
+                svg = unquote(svg.split(",", 1)[1])
+            p = out_dir / f"{name}.svg"
+            p.write_text(svg, encoding="utf-8")
+            paths.append(str(p))
+        if not paths:
+            raise UserError("Nothing to save.")
+        return jsonify(paths=paths)
+
+
+@app.post("/api/anisotropy/save_map")
+def save_anisotropy_map():
+    """Save the anisotropy map (float32 TIFF, NaN = no data) of an image."""
+    b = body()
+    image_id, mode = b.get("id"), b.get("mode", "divide")
+    with state.lock:
+        ai = state.require_ai()
+        img = state.image(image_id)
+        pol = num(b.get("polarization"), "Polarization factor", allow_none=True)
+        amap, _ = anisotropy_map(ai, img, state.mask_for(img), mode=mode, bins=state.settings["bins"],
+                                 q_range=state.q_range(), solid_angle=bool(b.get("solid_angle")), polarization=pol)
+        path = results.analysis_dir(state.require_folder(), "anisotropy") / f"{image_io.curve_name(image_id)}_map_{mode}.tif"
+        save_tif(path, amap)
+        return jsonify(path=str(path))
+
+
+@app.post("/api/open_folder")
+def open_folder_in_os():
+    """Show the analysis folder in Explorer / Finder / the file manager."""
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        raise UserError("Only possible on the computer running SAXSII.")
+    with state.lock:
+        p = results.analysis_dir(state.require_folder())
+    if sys.platform.startswith("win"):
+        os.startfile(p)
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(p)])
+    return jsonify(path=str(p))
 
 
 # ----------------------------------------------------------------------------- 1D integration / curves
@@ -533,14 +853,68 @@ def average_curves():
     if len(names) < 2:
         raise UserError("Select at least 2 curves to average.")
     with state.lock:
-        curves = [state.curves[n] for n in names]
-        radial = curves[0]["radial"]
-        Is, Ss = zip(*(_on_grid(c, radial) for c in curves))
-        n = len(curves)
-        curve = {"radial": radial, "intensity": np.mean(Is, axis=0),
-                 "sigma": np.sqrt(np.sum(np.square(Ss), axis=0)) / n}  # error of the mean
-        name = _store_new_curve(b.get("name"), curve)
+        name = _store_new_curve(b.get("name"), _mean_curve([state.curves[n] for n in names]))
         return jsonify(name=name, curves=sorted(state.curves))
+
+
+def _mean_curve(curves):
+    """Average on the radial grid of the first curve; sigma = error of the mean."""
+    radial = curves[0]["radial"]
+    Is, Ss = zip(*(_on_grid(c, radial) for c in curves))
+    return {"radial": radial, "intensity": np.mean(Is, axis=0),
+            "sigma": np.sqrt(np.sum(np.square(Ss), axis=0)) / len(curves)}
+
+
+# ----------------------------------------------------------------------------- group & average by name
+
+@app.post("/api/group/preview")
+def group_preview():
+    """Which groups a name pattern produces (ids: images to consider; keep: field indices; regex)."""
+    b = body()
+    groups, unmatched = grouping.group_images(b.get("ids") or [], keep=b.get("keep") or [],
+                                              regex=(b.get("regex") or "").strip(),
+                                              include=(b.get("include") or "").strip())
+    seen = {}
+    for g in groups:  # make output names unique
+        n = seen.get(g["name"], 0)
+        seen[g["name"]] = n + 1
+        if n:
+            g["name"] = f"{g['name']}{grouping.SEP}{g['key']}"
+    return jsonify(groups=groups, unmatched=unmatched)
+
+
+@app.post("/api/group/average")
+def group_average():
+    """Average one group. mode 'curves': integrate members that are not yet integrated, store
+    the mean curve (+ .dat); mode 'images': mean image -> <folder>/averaged/<name>.tif."""
+    b = body()
+    members, name, mode = b.get("members") or [], (b.get("name") or "").strip(), b.get("mode", "curves")
+    if not members or not name:
+        raise UserError("Empty group.")
+    with state.lock:
+        folder = state.require_folder()
+        if mode == "images":
+            arrays = [state.image(i).astype(np.float64) for i in members]
+            if len({a.shape for a in arrays}) != 1:
+                raise UserError(f"{name}: images have different shapes.")
+            out = Path(folder) / "averaged"
+            out.mkdir(exist_ok=True)
+            path = save_tif(out / f"{name}.tif", np.mean(arrays, axis=0))
+            return jsonify(path=str(path), n=len(members))
+        ai = state.require_ai()
+        s = state.settings
+        curves = []
+        for i in members:
+            cname = image_io.curve_name(i)
+            if cname not in state.curves:
+                img = state.image(i)
+                state.curves[cname] = integrate_1d(ai, img, state.mask_for(img), s["bins"], state.q_range(),
+                                                   s["sigma_thres"])
+                save_dat(cname, folder, state.curves[cname], s["unit"])
+            curves.append(state.curves[cname])
+        state.curves[name] = _mean_curve(curves)
+        save_dat(name, folder, state.curves[name], s["unit"])
+        return jsonify(name=name, n=len(members), curves=sorted(state.curves))
 
 
 @app.post("/api/curves/remove")
@@ -562,7 +936,13 @@ def load_dat_curves():
     with state.lock:
         folder = Path(state.require_folder())
         for fname in names:
-            df = pd.read_csv(folder / fname, comment="#")
+            path = folder / fname  # fname may also be an absolute path (native dialog)
+            if not path.is_file():
+                raise UserError(f"File not found: {path}")
+            try:
+                df = pd.read_csv(path, comment="#")
+            except Exception as e:
+                raise UserError(f"Could not read {path.name}: {e}") from e
             col = df.columns[0]
             unit = col.split("radial-", 1)[-1] if col.startswith("radial-") else "q_A^-1"
             f = unit_factor(unit) if unit in UNITS else 1.0
@@ -628,18 +1008,35 @@ def subtract_images():
 
 @app.post("/api/markers")
 def post_markers():
+    """Add {name, q}, edit {rename: old, name, q} (keeps its position), {remove: name} or {clear}.
+    q is given in the current display unit and stored in A^-1."""
     b = body()
     with state.lock:
+        markers = state.markers
         if b.get("clear"):
-            state.markers.clear()
+            markers.clear()
         elif b.get("remove"):
-            state.markers.pop(b["remove"], None)
+            markers.pop(b["remove"], None)
         else:
             name = (b.get("name") or "").strip()
             if not name:
                 raise UserError("Enter a marker name.")
-            state.markers[name] = num(b.get("q"), "q") / unit_factor(state.settings["unit"])
-        return jsonify(markers=state.markers)
+            q = num(b.get("q"), "q") / unit_factor(state.settings["unit"])
+            if q <= 0:
+                raise UserError("q must be positive.")
+            old = b.get("rename")
+            if old is not None and old not in markers:
+                raise UserError(f"No marker named {old}.")
+            if name in markers and name != old:
+                raise UserError(f"A marker named {name} already exists.")
+            if old is None:
+                markers[name] = q
+            else:  # rebuild to keep the marker's place in the order (= its color)
+                items = [(name, q) if k == old else (k, v) for k, v in markers.items()]
+                markers.clear()
+                markers.update(items)
+        state.save_settings()
+        return jsonify(markers=markers)
 
 
 def create_app():

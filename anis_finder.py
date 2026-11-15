@@ -83,12 +83,54 @@ def anisotropy_map(ai, image, mask, mode="divide", bins=1000, q_range=None,
     return out, {"q": q, "intensity": I}
 
 
-def chi_profile(ai, image, mask, q_range, nbins=180, solid_angle=False, polarization=None):
+def fill_chi_gaps(chi_deg, prof):
+    """Fill empty chi bins (detector gaps, beamstop): first from the bin 180 deg away
+    (small-angle patterns are centrosymmetric, I(chi) = I(chi + 180)), then by circular
+    linear interpolation between neighbouring bins. Assumes uniform bins over 360 deg."""
+    out = np.array(prof, dtype=float)
+    n = len(out)
+    if n % 2 == 0:
+        opposite = np.roll(out, n // 2)
+        gap = ~np.isfinite(out)
+        out[gap] = opposite[gap]
+    ok = np.isfinite(out)
+    if not ok.all():
+        out[~ok] = np.interp(chi_deg[~ok], chi_deg[ok], out[ok], period=360.0)
+    return out
+
+
+def orientation_factors(chi_deg, prof, reference_deg, subtract_baseline=False):
+    """Hermans orientation factor of I(chi) about the axis at `reference_deg`
+    (beta = chi - reference):
+
+      hermans_f  f = (3 <cos^2 beta> - 1) / 2 with <cos^2 beta> = sum I |sin b| cos^2 b / sum I |sin b|
+                 (the |sin beta| weight treats beta as a polar angle, i.e. assumes symmetry about
+                 the reference axis lying in the detector plane).
+                 0 = isotropic, 1 = all intensity along the axis, -1/2 = perpendicular to it.
+
+    With subtract_baseline the minimum of I(chi) (isotropic background) is removed first.
+    Empty bins are filled with fill_chi_gaps so they do not bias the averages."""
+    I = fill_chi_gaps(chi_deg, prof)
+    if subtract_baseline:
+        I = I - I.min()
+    if not np.isfinite(I).all() or I.sum() <= 0:
+        return {"hermans_f": None}
+    beta = np.deg2rad(chi_deg - reference_deg)
+    cos2 = np.cos(beta) ** 2
+    w = I * np.abs(np.sin(beta))
+    cos2_3d = (w * cos2).sum() / w.sum() if w.sum() > 0 else np.nan
+    return {"hermans_f": float((3 * cos2_3d - 1) / 2) if np.isfinite(cos2_3d) else None}
+
+
+def chi_profile(ai, image, mask, q_range, nbins=180, solid_angle=False, polarization=None,
+                f_reference_deg=None, f_subtract_baseline=False):
     """Mean intensity vs azimuthal angle chi (deg) for pixels with q in q_range (A^-1).
 
     Also returns anisotropy descriptors from fitting I(chi) = I0 [1 + A cos 2(chi - phi)]:
       * amplitude: A (0 = isotropic); robust to noise and to missing azimuthal sectors.
       * orientation_deg: phi, the chi of maximum intensity (pyFAI chi convention).
+    and the Hermans orientation factor (see orientation_factors) about
+    f_reference_deg (None = the fitted phi).
     """
     rng = q_range_arg(q_range)
     if rng is None:
@@ -128,5 +170,12 @@ def chi_profile(ai, image, mask, q_range, nbins=180, solid_angle=False, polariza
         "max_over_min": float(np.nanmax(prof) / np.nanmin(prof)) if np.nanmin(prof) > 0 else None,
         "coverage": float(ok.mean()),
         "pixels": int(sel.sum()),
+        "i0": float(a0),
     }
-    return {"chi": centers, "intensity": prof}, metrics
+    ref = metrics["orientation_deg"] if f_reference_deg is None else float(f_reference_deg)
+    metrics.update(orientation_factors(centers, prof, ref, f_subtract_baseline))
+    metrics["f_reference_deg"] = ref
+    metrics["f_baseline_subtracted"] = bool(f_subtract_baseline)
+    crad = np.deg2rad(centers)
+    fit = a0 + c * np.cos(2 * crad) + s * np.sin(2 * crad)
+    return {"chi": centers, "intensity": prof, "fit": fit}, metrics

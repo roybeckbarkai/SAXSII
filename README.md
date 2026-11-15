@@ -15,20 +15,40 @@ The server listens on `127.0.0.1` only. Folder, PONI, mask and integration setti
 
 1. **Images** – open a folder (`.tif/.tiff/.edf/.cbf`, HDF5/NeXus stacks are listed frame by frame).
    *Track folder* polls for new files; *Show newest* displays each new image as it arrives.
+   *Group & average by name…* averages images whose names share chosen parts: click e.g. `p08` in
+   `hirsch_00405_…_p08_f00` to average all frames of each position (or `f00` for each frame over all
+   positions), or give a regular expression. Output: averaged 1D curves or averaged TIFFs in `averaged/`.
    *Load NXS file…* converts a NeXus file into per-frame TIFFs + mask + PONI (folder next to the `.nxs`,
    via `NXS2TIF_conversion/nxs_to_tiff.py`) and loads them.
 2. **Calibration** – load a `.poni` file (from `pyFAI-calib2`) and optionally a `.msk` mask.
    Negative pixels (detector gaps), integer-saturated pixels and the detector's own mask are always excluded.
    The geometry panel lets you adjust distance / wavelength / beam center (or click *Set center* on the image).
+   **Auto-mask beamstop** finds the beamstop disk and arm on the shown image (dark region connected to
+   the beam center, compared with the typical intensity at the same radius) and applies it to every image.
+   It is drawn in cyan; tune it with the sliders (darkness threshold, smoothing, safety margin, minimum patch
+   size) and save it as a `.msk` file if wanted.
 3. **Integration** – choose bins, unit and an optional q range (type it or *Pick q min/max* on the image,
    cake or curve). Each integrated image is saved next to it as `<name>.dat`.
 4. **1D curves** – overlay, background-subtract (`sample − f·background`, errors in quadrature),
-   average (error of the mean), export CSV, reload `.dat` files, add q markers.
+   average (error of the mean), export CSV, reload `.dat` files.
+   **Markers**: *Add marker* on the image, anisotropy map, cake or 1D curves (click where it goes, name
+   it); every marker shows in all of those views (ring on detector images, line on cake / curves) in its
+   own color. Click a marker in the Markers list to rename or move it, ✕ to remove. Saved in `settings.json`.
 5. **Cake** – I(q, χ) map.
 6. **Anisotropy** – deviation of the image from its own azimuthal average I<sub>iso</sub>(q):
    `I / I_iso − 1` (relative) or `I − I_iso` (absolute), signed and shown on a diverging colormap.
    With a q range set, the panel below shows I(χ) and the fit `I(χ) = I₀[1 + A cos 2(χ − φ)]`:
    **A** is the anisotropy amplitude (0 = isotropic) and **φ** the orientation (pyFAI χ convention).
+   Also reported: the **Hermans orientation factor** f = (3⟨cos²β⟩ − 1)/2 with ⟨⟩ weighted by I(χ)·|sin β|
+   (β = χ − axis; assumes symmetry about the axis, which lies in the detector plane; 0 isotropic,
+   1 along the axis, −½ across). The axis is the fitted φ or a fixed χ (e.g. the stretching direction); the isotropic baseline (min of I(χ)) can be
+   subtracted first. Empty χ bins are filled from χ + 180° (centrosymmetry) or neighbouring bins.
+   See Rooks et al., *J. Appl. Cryst.* 56 (2023) 683 for a comparison of anisotropy-factor definitions.
+   *Save to results* / *Run on selected* / *Run on all* store each I(χ) + fit in `analysis/anisotropy/`
+   and A, φ, … in `analysis/anisotropy_results.csv`; *Save map* writes the map as a float32 TIFF.
+7. **Results** – every saved analysis of the folder (reloaded when you reopen it): a sortable table,
+   any column plotted against any other (image number, acquisition time, A, φ, …), or the saved
+   profiles of selected rows overlaid. *Save figure* (on every plot) writes PNG + SVG to `analysis/figures/`.
    Optional solid-angle and polarization corrections are applied to the image and the reference alike.
 
 ## Code layout
@@ -39,6 +59,10 @@ The server listens on `127.0.0.1` only. Folder, PONI, mask and integration setti
 | `server.py` | Flask JSON API and app state |
 | `integration_methods.py` | pyFAI integration, caking, masks, geometry |
 | `anis_finder.py` | isotropic reference, anisotropy maps, χ profile |
+| `beamstop.py` | automatic beamstop / arm detection |
+| `grouping.py` | grouping images by parts of their names (for averaging) |
+| `results.py` | saved analysis tables (`analysis/<kind>_results.csv`) – register new analyses here |
+| `native_dialogs.py` | system file / folder dialogs |
 | `image_io.py` | folder listing, image/HDF5 reading, PNG rendering |
 | `saving_methods.py` | `.dat` / `.csv` / `.tif` writers |
 | `web/` | browser frontend (plain JS + Plotly) |
